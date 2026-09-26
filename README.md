@@ -288,3 +288,8 @@ Deployed on Stellar Testnet. Switch to Mainnet for production.
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-913 -->
+- #913: Implement Energy Arbitrage Detection
