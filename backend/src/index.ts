@@ -40,8 +40,15 @@ import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
+import { billingRouter } from "./routes/billing.js";
+import { competitionsRouter } from "./routes/competitions.js";
+import { smartHomeRouter } from "./routes/smartHome.js";
+import { widgetsRouter } from "./routes/widgets.js";
+import { startBillingScheduler } from "./lib/billing.js";
+import { startCompetitionScheduler } from "./lib/competitions.js";
+import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
-import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
+import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
@@ -158,6 +165,15 @@ app.use("/api/meters", insightsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
+// #901–#904: widgets, billing, competitions, smart home
+app.use("/api/widgets", widgetsRouter);
+app.use("/api/billing", writeLimiter, billingRouter);
+app.use("/api/competitions", competitionsRouter);
+app.use("/api/smart-home", smartHomeRouter);
+setRelaySender(sendRelayCommand);
+startBillingScheduler();
+startCompetitionScheduler();
+startSmartHomeScheduler();
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
