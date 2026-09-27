@@ -191,32 +191,24 @@ The `batch_register_meters(meters: Vec<(String, Address)>)` function enables ene
 - **Event Emission:** Emits standard `meter_registered` (`mtr_reg`) event for each successfully registered meter and `batch_skip` (`btch_skip`) for failed/skipped entries.
 - **Detailed Error Reporting:** Returns `Vec<BatchRegisterResult>` with `meter_id`, `success: bool`, and `error: Option<String>` detailing reasons for any partial failures (`empty_meter_id`, `duplicate_in_batch`, `meter_already_exists`, `owner_not_allowlisted`).
 
-## Multi-currency payments (#837)
+## Admin Audit Log (#836)
 
-Admins whitelist Stellar assets (USDC, EURC, …) with a conversion rate into the canonical payment token. Rates are fixed-point: `rate = canonical units per asset unit × RATE_SCALE` (`RATE_SCALE = 10_000_000`).
+Every state-changing admin function (allowlist, oracle, freeze/pause, pricing,
+refunds, meter lifecycle, collaborators, distributions, migrations, multisig
+configuration, emergency withdrawals) appends an immutable `AdminAuditEntry` to
+persistent storage and emits an `AdminAct` event:
 
-| Function | Description |
-|---|---|
-| `add_supported_asset(asset, rate)` | Admin. Whitelist an asset or update its rate (`rate > 0`). |
-| `set_asset_rate(asset, rate)` | Admin. Update the rate of a supported asset. |
-| `remove_supported_asset(asset)` | Admin. Remove an asset from the whitelist. |
-| `supported_assets()` | List `SupportedAsset { asset, rate }`. |
-| `make_asset_payment(meter_id, payer, asset, amount)` | Transfer `amount` of `asset`, credit the meter `amount × rate / RATE_SCALE` canonical units. Returns the credited amount. |
-| `get_asset_payment_balance(meter_id)` | Canonical-unit balance credited via asset payments. |
+| Field             | Type      | Description                              |
+|-------------------|-----------|------------------------------------------|
+| `id`              | `u64`     | Sequential entry id (0-based)            |
+| `action_type`     | `String`  | Name of the admin function invoked       |
+| `admin_address`   | `Address` | Admin that authorized the call           |
+| `affected_entity` | `String`  | Entity affected by the action            |
+| `timestamp`       | `u64`     | Ledger timestamp of the action           |
 
-All balances are stored in canonical units. Unsupported assets are rejected with `InvalidConfiguration`.
+Query functions:
 
-## Meter warranty tracking (#838)
-
-Warranty data is stored in meter metadata under standard keys:
-
-| Key | Format |
-|---|---|
-| `warranty_expires_at` | Unix timestamp in seconds, decimal digits only (validated; otherwise `InvalidMetadata`) |
-| `warranty_provider` | Free text (≤ 100 chars) |
-| `warranty_terms` | Free text (≤ 100 chars) |
-
-Helpers:
-
-- `get_warranty_expiry(meter_id) -> Option<u64>`
-- `get_meters_with_expiring_warranty(within_secs) -> Vec<String>` — meters whose warranty expires within `within_secs` of the current ledger time (including already expired).
+- `get_audit_log_count() -> u64`
+- `get_audit_logs(filter: AuditLogFilter, offset: u32, limit: u32) -> Vec<AdminAuditEntry>`
+  - `filter.action_type`, `filter.admin`, `filter.from_ts`, `filter.to_ts` are all optional.
+  - `offset` skips matching entries; `limit` is capped at 100.
