@@ -9,6 +9,7 @@
  */
 
 import { handleHeartbeatMessage } from "../lib/meterHealth.js";
+import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -34,6 +35,8 @@ const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
 // Issue #834: meters publish periodic heartbeats here.
 const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
+// Issue #897: registered devices (panels, inverters, meters) publish performance telemetry here.
+const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
@@ -476,6 +479,9 @@ function startMqttBridge() {
     client.subscribe(HEARTBEAT_TOPIC, { qos: 1 }, (err) => {
       if (err) logger.error("MQTT heartbeat subscribe error", { err });
     });
+    client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
+      if (err) logger.error("MQTT device telemetry subscribe error", { err });
+    });
   });
 
   client.on("message", async (topic, payload) => {
@@ -484,6 +490,14 @@ function startMqttBridge() {
     mqttMessages.inc({ topic: labelTopic });
     if (segments[3] === "heartbeat") {
       handleHeartbeatMessage(segments[2], payload);
+      return;
+    }
+    if (segments[1] === "devices" && segments[3] === "telemetry") {
+      try {
+        handleDeviceTelemetry(segments[2], payload);
+      } catch (err) {
+        logger.error("Device telemetry handling failed", { topic, err });
+      }
       return;
     }
     try {

@@ -40,6 +40,11 @@ import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
+import { devicesRouter } from "./routes/devices.js";
+import { weatherRouter } from "./routes/weather.js";
+import { stakingRouter } from "./routes/staking.js";
+import { startMaintenanceReminderWorker } from "./lib/deviceRegistry.js";
+import { startWeatherAlertWatcher } from "./lib/weatherAlerts.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
@@ -158,6 +163,14 @@ app.use("/api/meters", insightsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
+// Issue #897: energy device registry (panels, inverters, meters).
+app.use("/api/devices", writeLimiter, devicesRouter);
+startMaintenanceReminderWorker();
+// Issue #900: weather forecasts, weather-adjusted production, alerts.
+app.use("/api/weather", weatherRouter);
+startWeatherAlertWatcher();
+// Issue #899: energy token staking stats.
+app.use("/api/staking", stakingRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 

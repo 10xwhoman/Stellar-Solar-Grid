@@ -15,7 +15,8 @@
     "test:scrub": "tsx tests/scrub.test.ts",
     "test:cors": "tsx tests/cors.test.ts",
     "test:rate-limit-spoof": "tsx tests/rate-limit-spoof.test.ts",
-    "test:integration": "vitest run --config vitest.config.ts"
+    "test:integration": "vitest run --config vitest.config.ts",
+    "docs:graphql": "tsx scripts/generate-graphql-docs.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
