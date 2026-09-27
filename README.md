@@ -291,8 +291,5 @@ MIT
 
 ## Handsoff notes
 
-<!-- handsoff-issue-911 -->
-- #911: Create Energy Trading Academy
-
-<!-- handsoff-issue-912 -->
-- #912: Add Blockchain Explorer Integration
+<!-- handsoff-issue-908 -->
+- #908: Create Energy Community Marketplace
