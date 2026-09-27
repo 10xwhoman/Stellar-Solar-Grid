@@ -293,3 +293,6 @@ MIT
 
 <!-- handsoff-issue-911 -->
 - #911: Create Energy Trading Academy
+
+<!-- handsoff-issue-912 -->
+- #912: Add Blockchain Explorer Integration
