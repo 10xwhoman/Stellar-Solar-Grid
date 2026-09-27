@@ -191,22 +191,24 @@ The `batch_register_meters(meters: Vec<(String, Address)>)` function enables ene
 - **Event Emission:** Emits standard `meter_registered` (`mtr_reg`) event for each successfully registered meter and `batch_skip` (`btch_skip`) for failed/skipped entries.
 - **Detailed Error Reporting:** Returns `Vec<BatchRegisterResult>` with `meter_id`, `success: bool`, and `error: Option<String>` detailing reasons for any partial failures (`empty_meter_id`, `duplicate_in_batch`, `meter_already_exists`, `owner_not_allowlisted`).
 
-## Meter Groups, Referrals, and Installation Dates (Issues #829, #831, #832)
+## Admin Audit Log (#836)
 
-### Meter groups (#829)
+Every state-changing admin function (allowlist, oracle, freeze/pause, pricing,
+refunds, meter lifecycle, collaborators, distributions, migrations, multisig
+configuration, emergency withdrawals) appends an immutable `AdminAuditEntry` to
+persistent storage and emits an `AdminAct` event:
 
-- `create_meter_group(group_id, name, owner)` creates an owner-controlled group.
-- `add_meter_to_group(group_id, meter_id)` and `remove_meter_from_group(group_id, meter_id)` manage membership; a meter must belong to the group owner.
-- `batch_pay_group(group_id, payer, amount, plan, memo)` splits the payment across all group meters.
-- `get_group_stats(group_id)` returns meter count, active count, aggregate units used, and aggregate balance.
+| Field             | Type      | Description                              |
+|-------------------|-----------|------------------------------------------|
+| `id`              | `u64`     | Sequential entry id (0-based)            |
+| `action_type`     | `String`  | Name of the admin function invoked       |
+| `admin_address`   | `Address` | Admin that authorized the call           |
+| `affected_entity` | `String`  | Entity affected by the action            |
+| `timestamp`       | `u64`     | Ledger timestamp of the action           |
 
-### Referrals (#831)
+Query functions:
 
-- `set_referrer(referred, referrer)` can be called once by the referred address and rejects self-referrals.
-- The admin configures `set_referral_bonus_percent(percent)` from 0–100.
-- Each direct payment by a referred address credits the referrer’s tracked balance and updates `ReferralStats`.
-- The `ref_crdt` event contains the referrer and `(payer, credit)`.
-
-### Installation dates (#832)
-
-`Meter` is now schema version 6 and includes `installed_at`, initialized to the ledger timestamp at registration. `migrate_meter_v5(meter_id)` upgrades legacy entries using their last-payment/registration timestamp. Admins can correct historical dates with `set_installation_date`; future timestamps are rejected. `get_installed_at` exposes the value.
+- `get_audit_log_count() -> u64`
+- `get_audit_logs(filter: AuditLogFilter, offset: u32, limit: u32) -> Vec<AdminAuditEntry>`
+  - `filter.action_type`, `filter.admin`, `filter.from_ts`, `filter.to_ts` are all optional.
+  - `offset` skips matching entries; `limit` is capped at 100.
