@@ -288,3 +288,8 @@ Deployed on Stellar Testnet. Switch to Mainnet for production.
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-911 -->
+- #911: Create Energy Trading Academy
