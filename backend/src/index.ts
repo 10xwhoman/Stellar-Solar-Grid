@@ -7,6 +7,9 @@ import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { auditRouter } from "./routes/audit.js";
+import { socialRouter } from "./routes/social.js";
+import { startLeaderboardScheduler } from "./lib/social.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
 import {
@@ -63,6 +66,9 @@ app.use((req, _res, next) => {
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/social", socialRouter);
+startLeaderboardScheduler();
 
 app.get('/health', async (_req, res) => {
   const checks: Record<string, string> = {};

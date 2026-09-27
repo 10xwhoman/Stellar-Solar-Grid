@@ -3,6 +3,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
+import { recordAudit } from "./audit.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -170,6 +171,13 @@ export function insertSubmittedUsageEvents(
     `,
   );
 
+  recordAudit({
+    action: "usage_batch_submitted",
+    txHash,
+    amount: readings.reduce((sum, r) => sum + r.cost, 0),
+    details: { count: readings.length, meters: [...new Set(readings.map((r) => r.meterId))] },
+  });
+
   const insert = db.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
     for (const r of rows) {
       stmt.run(
@@ -265,6 +273,13 @@ async function submitUsageEvent(id: number) {
         WHERE id = ?
       `
     ).run(attemptedAt, hash, attemptedAt, id);
+    recordAudit({
+      action: "usage_submitted",
+      meterId: event.meter_id,
+      amount: event.cost,
+      txHash: hash,
+      details: { units: event.units, eventId: id },
+    });
 
     return getUsageEventById(id);
   } catch (error) {
@@ -294,4 +309,28 @@ async function submitUsageEvent(id: number) {
   } finally {
     activeSubmissionIds.delete(id);
   }
+}
+
+export type MeterUsageStats = {
+  meter_id: string;
+  total_units: number;
+  total_cost: number;
+  event_count: number;
+  active_days: number;
+  first_seen: string;
+};
+
+/** Aggregate per-meter usage totals (used by leaderboards and achievements). */
+export function getMeterUsageStats(): MeterUsageStats[] {
+  return db
+    .prepare(
+      `SELECT meter_id,
+              SUM(units) AS total_units,
+              SUM(CAST(cost AS REAL)) AS total_cost,
+              COUNT(*) AS event_count,
+              COUNT(DISTINCT substr(received_at, 1, 10)) AS active_days,
+              MIN(received_at) AS first_seen
+       FROM usage_events GROUP BY meter_id`,
+    )
+    .all() as MeterUsageStats[];
 }
