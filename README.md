@@ -291,5 +291,5 @@ MIT
 
 ## Handsoff notes
 
-<!-- handsoff-issue-913 -->
-- #913: Implement Energy Arbitrage Detection
+<!-- handsoff-issue-908 -->
+- #908: Create Energy Community Marketplace
