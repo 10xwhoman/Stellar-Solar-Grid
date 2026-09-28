@@ -20,6 +20,10 @@ import { paymentsRouter } from "./routes/payments.js";
 import { receiptsRouter } from "./routes/receipts.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { auditRouter } from "./routes/audit.js";
+import { socialRouter } from "./routes/social.js";
+import { startLeaderboardScheduler } from "./lib/social.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
@@ -130,6 +134,12 @@ interface MeterFirmware {
   reportedAt: string;
 }
 
+app.use("/api/meters", createMeterRouter(stellarService));
+app.use("/api/payments", paymentsRouter);
+app.use("/api/webhooks", webhookRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/social", socialRouter);
+startLeaderboardScheduler();
 const firmwareByMeter = new Map<string, MeterFirmware>();
 
 const LATEST_FIRMWARE_VERSION = process.env.LATEST_FIRMWARE_VERSION || '1.0.0';
