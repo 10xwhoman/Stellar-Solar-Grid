@@ -245,6 +245,8 @@ app.get('/api/health', (_req: Request, res: Response) => {
 const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => {
   console.log(`Backend listening on port ${port}`);
+  startEventIndexer();
+  startRecommendationWorker();
 });
 
 export { app, pool, recordFirmware, isOutdated, firmwareByMeter };

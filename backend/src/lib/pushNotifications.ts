@@ -111,3 +111,27 @@ export async function sendLowBalanceNotification(input: LowBalanceNotificationIn
     }),
   );
 }
+
+/** Send a generic push notification to every subscription owned by an address. */
+export async function sendPushToOwner(
+  ownerAddress: string,
+  notification: { title: string; body: string; tag: string; url?: string },
+): Promise<void> {
+  if (!pushConfigured) return;
+  const payload = JSON.stringify({
+    ...notification,
+    icon: "/icons/push-badge.svg",
+    data: { url: notification.url ?? "/dashboard" },
+  });
+  await Promise.all(
+    listPushSubscriptionsByOwner(ownerAddress).map(async (record) => {
+      try {
+        await webpush.sendNotification(toWebPushSubscription(record), payload);
+      } catch (err) {
+        const status = (err as { statusCode?: number }).statusCode;
+        if (status === 404 || status === 410) deletePushSubscriptionByEndpoint(record.endpoint);
+        else logger.warn({ err, ownerAddress }, "Push notification failed");
+      }
+    }),
+  );
+}
