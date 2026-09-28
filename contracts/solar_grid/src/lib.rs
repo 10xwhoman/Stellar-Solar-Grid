@@ -8,10 +8,12 @@ use soroban_sdk::{
 };
 
 mod multi_asset;
+mod staking;
 mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
+pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
@@ -65,6 +67,14 @@ pub enum ContractError {
     MeterGroupAlreadyExists = 35,
     InvalidReferral = 36,
     InvalidInstallationDate = 37,
+    /// `configure_staking` has not been called (Issue #899).
+    StakingNotConfigured = 38,
+    /// Unstake amount exceeds the caller's active stake.
+    InsufficientStake = 39,
+    /// No tokens are cooling down for this staker.
+    NoPendingUnstake = 40,
+    /// The unstake cooldown period has not elapsed yet.
+    CooldownNotElapsed = 41,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
