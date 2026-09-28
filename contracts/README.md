@@ -212,3 +212,39 @@ Query functions:
 - `get_audit_logs(filter: AuditLogFilter, offset: u32, limit: u32) -> Vec<AdminAuditEntry>`
   - `filter.action_type`, `filter.admin`, `filter.from_ts`, `filter.to_ts` are all optional.
   - `offset` skips matching entries; `limit` is capped at 100.
+
+## Energy Token Staking (#899)
+
+Implemented in `solar_grid/src/staking.rs`. See `docs/STAKING_SECURITY_REVIEW.md`
+for the security review.
+
+Admin setup:
+
+- `configure_staking(stake_token, reward_token, reward_rate, cooldown_secs)`: `reward_rate`
+  is reward units per second shared by all stakers; `cooldown_secs` ≤ 90 days. Tokens
+  can't be switched once staking has activity.
+- `fund_staking_rewards(from, amount)`: tops up the reward reserve (anyone may fund).
+
+User functions (each requires the staker's auth):
+
+| Function | Notes |
+| --- | --- |
+| `stake(staker, amount)` | Blocked while the contract is paused |
+| `request_unstake(staker, amount) -> u64` | Stops rewards and voting power at once; returns the unlock time. A new request adds to the bucket and restarts the cooldown |
+| `withdraw_unstaked(staker) -> i128` | After the cooldown |
+| `cancel_unstake(staker) -> i128` | Restakes tokens that are cooling down |
+| `claim_staking_rewards(staker) -> i128` | Pays all accrued rewards |
+
+Views: `get_staking_config`, `get_staking_pool`, `get_stake_info(staker)`,
+`get_voting_power(voter)`, `get_total_voting_power()`.
+
+Rewards use a reward-per-share accumulator (scale 1e12): O(1) per call, pro-rata to
+stake, and emission stops when the funded reserve is exhausted. Voting power is the
+active stake; pass `get_voting_power(voter)` as the `weight` to
+`governance::vote_on_proposal`, and `get_total_voting_power()` to size quorum.
+
+Events (`solar`, …): `stk_cfg`, `stk_fund`, `staked`, `unstk_req`, `unstaked`,
+`unstk_cxl`, `stk_claim`.
+
+New errors: `StakingNotConfigured` (38), `InsufficientStake` (39),
+`NoPendingUnstake` (40), `CooldownNotElapsed` (41).

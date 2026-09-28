@@ -20,6 +20,10 @@ import { paymentsRouter } from "./routes/payments.js";
 import { receiptsRouter } from "./routes/receipts.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { auditRouter } from "./routes/audit.js";
+import { socialRouter } from "./routes/social.js";
+import { startLeaderboardScheduler } from "./lib/social.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
@@ -40,13 +44,15 @@ import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
-import { eventsRouter } from "./routes/events.js";
-import { emergencyRouter } from "./routes/emergency.js";
-import { recommendationsRouter } from "./routes/recommendations.js";
-import { startEventIndexer } from "./lib/eventIndexer.js";
-import { startRecommendationWorker } from "./lib/recommendations.js";
+import { billingRouter } from "./routes/billing.js";
+import { competitionsRouter } from "./routes/competitions.js";
+import { smartHomeRouter } from "./routes/smartHome.js";
+import { widgetsRouter } from "./routes/widgets.js";
+import { startBillingScheduler } from "./lib/billing.js";
+import { startCompetitionScheduler } from "./lib/competitions.js";
+import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
-import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
+import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
@@ -128,6 +134,12 @@ interface MeterFirmware {
   reportedAt: string;
 }
 
+app.use("/api/meters", createMeterRouter(stellarService));
+app.use("/api/payments", paymentsRouter);
+app.use("/api/webhooks", webhookRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/social", socialRouter);
+startLeaderboardScheduler();
 const firmwareByMeter = new Map<string, MeterFirmware>();
 
 const LATEST_FIRMWARE_VERSION = process.env.LATEST_FIRMWARE_VERSION || '1.0.0';
@@ -163,9 +175,15 @@ app.use("/api/meters", insightsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
-app.use("/api/events", eventsRouter);
-app.use("/api/emergency", writeLimiter, emergencyRouter);
-app.use("/api/recommendations", recommendationsRouter);
+// #901–#904: widgets, billing, competitions, smart home
+app.use("/api/widgets", widgetsRouter);
+app.use("/api/billing", writeLimiter, billingRouter);
+app.use("/api/competitions", competitionsRouter);
+app.use("/api/smart-home", smartHomeRouter);
+setRelaySender(sendRelayCommand);
+startBillingScheduler();
+startCompetitionScheduler();
+startSmartHomeScheduler();
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
