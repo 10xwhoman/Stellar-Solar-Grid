@@ -39,12 +39,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           Skip to main content
         </a>
         <ErrorBoundary>
-          <ToastProvider>
+          <I18nProvider>
             <ServiceWorkerRegister />
             <OfflineBanner />
-            {children}
-          </ToastProvider>
-          <I18nProvider>
             <ContractPauseBanner />
             <ToastProvider>{children}</ToastProvider>
             <Footer />

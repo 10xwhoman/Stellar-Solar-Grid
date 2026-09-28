@@ -40,6 +40,11 @@ import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
+import { eventsRouter } from "./routes/events.js";
+import { emergencyRouter } from "./routes/emergency.js";
+import { recommendationsRouter } from "./routes/recommendations.js";
+import { startEventIndexer } from "./lib/eventIndexer.js";
+import { startRecommendationWorker } from "./lib/recommendations.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
@@ -158,6 +163,9 @@ app.use("/api/meters", insightsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
+app.use("/api/events", eventsRouter);
+app.use("/api/emergency", writeLimiter, emergencyRouter);
+app.use("/api/recommendations", recommendationsRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -219,6 +227,8 @@ app.get('/api/health', (_req: Request, res: Response) => {
 const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => {
   console.log(`Backend listening on port ${port}`);
+  startEventIndexer();
+  startRecommendationWorker();
 });
 
 export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
