@@ -1,145 +1,210 @@
-# SolarGrid Backend API
+# Backend API
 
-## Development with Docker Compose
+This document describes the backend HTTP API surface.
 
-### Quick Start
+## Energy Grid Simulation Tool (#909)
 
-Spin up the full development stack (backend + MQTT broker) with:
+The simulation tool lets operators test grid scenarios, inspect grid state,
+run what-if analyses, and generate impact reports for capacity planning.
 
-```bash
-docker-compose up --build
-```
+### Simulation engine
 
-This will:
+`POST /api/grid/simulate`
 
-- Build and start the Node.js backend on port 3001
-- Start an MQTT broker (Eclipse Mosquitto) on ports 1883 (MQTT) and 9001 (WebSocket)
-- Configure the backend to connect to the MQTT broker automatically
+Runs a simulation for a given scenario and returns the resulting grid state.
 
-### Environment Configuration
-
-Copy `.env.example` to `.env` and update the values:
-
-```bash
-cp backend/.env.example backend/.env
-# Edit backend/.env with your configuration
-```
-
-The `MQTT_BROKER` is pre-configured to `mqtt://mqtt:1883` for Docker Compose networking.
-
-### Stopping the Stack
-
-```bash
-docker-compose down
-```
-
-To also remove volumes (e.g., for a clean restart):
-
-```bash
-docker-compose down -v
-```
-
-## Idempotency
-
-Payment endpoints support the `Idempotency-Key` header to prevent duplicate submissions on network retries.
-
-### `POST /api/meters/:id/pay`
-
-Submit a payment for a meter.
-
-**Headers**
-
-| Header            | Required | Description                                |
-| ----------------- | -------- | ------------------------------------------ |
-| `Idempotency-Key` | No       | Unique client-generated key (e.g. UUID v4) |
-
-**Body**
+Request body:
 
 ```json
 {
-  "token_address": "C...",
-  "payer": "G...",
-  "amount_stroops": 5000000,
-  "plan": "Daily"
+  "scenario": {
+    "name": "peak-summer-demand",
+    "durationHours": 24,
+    "stepMinutes": 15,
+    "nodes": [
+      { "id": "gen-1", "type": "generator", "capacityMw": 500, "outputMw": 420 },
+      { "id": "load-1", "type": "load", "demandMw": 380 }
+    ],
+    "links": [
+      { "from": "gen-1", "to": "load-1", "capacityMw": 600 }
+    ]
+  }
 }
 ```
 
-**Behaviour**
-
-- If `Idempotency-Key` is provided and a successful response for that key exists in the cache (within 24 h), the cached `{ hash }` is returned immediately — no duplicate contract call is made.
-- Cache entries expire after 24 hours.
-- Expired entries are evicted lazily on the next write.
-
-**Response**
-
-```json
-{ "hash": "<transaction-hash>" }
-```
-
-## Low-Balance Webhook Notifications
-
-Providers can register webhook URLs to receive notifications when a customer's meter balance drops below a configurable threshold.
-
-### Configuration
-
-Set the following environment variables:
-
-| Variable                | Required | Default | Description                                    |
-| ----------------------- | -------- | ------- | ---------------------------------------------- |
-| `PROVIDER_WEBHOOK_URL`  | No       | -       | Webhook endpoint URL for low-balance alerts    |
-| `LOW_BALANCE_THRESHOLD` | No       | 1000000 | Balance threshold in stroops (0.1 XLM default) |
-
-### Register Webhook Endpoint
-
-**`POST /api/webhooks/low-balance`**
-
-Register or update the webhook URL for low-balance notifications.
-
-**Body**
+Response body:
 
 ```json
 {
-  "webhook_url": "https://your-service.com/webhooks/low-balance"
+  "scenarioId": "peak-summer-demand",
+  "status": "ok",
+  "steps": [
+    {
+      "t": 0,
+      "nodes": [
+        { "id": "gen-1", "outputMw": 420, "utilization": 0.84 },
+        { "id": "load-1", "demandMw": 380, "served": true }
+      ],
+      "links": [
+        { "from": "gen-1", "to": "load-1", "flowMw": 380, "utilization": 0.63 }
+      ]
+    }
+  ],
+  "summary": {
+    "peakDemandMw": 380,
+    "unservedMw": 0,
+    "overloadedLinks": []
+  }
 }
 ```
 
-**Response**
+### Scenario builder
+
+`POST /api/grid/scenarios`
+
+Creates a reusable scenario definition. The body accepts the same `scenario`
+object as the simulate endpoint.
+
+`GET /api/grid/scenarios` — list saved scenarios.
+
+`GET /api/grid/scenarios/{id}` — fetch a single scenario.
+
+`PUT /api/grid/scenarios/{id}` — update a scenario.
+
+`DELETE /api/grid/scenarios/{id}` — remove a scenario.
+
+### Visualization
+
+`GET /api/grid/scenarios/{id}/state`
+
+Returns the latest simulated grid state as a render-ready payload for the
+frontend (nodes with positions/status and links with flow values).
 
 ```json
 {
-  "message": "Webhook registered successfully",
-  "webhook_url": "https://your-service.com/webhooks/low-balance"
+  "scenarioId": "peak-summer-demand",
+  "nodes": [
+    { "id": "gen-1", "type": "generator", "status": "nominal", "utilization": 0.84 },
+    { "id": "load-1", "type": "load", "status": "served", "utilization": 0.63 }
+  ],
+  "links": [
+    { "from": "gen-1", "to": "load-1", "flowMw": 380, "status": "nominal" }
+  ]
 }
 ```
 
-### Webhook Payload
+### What-if analysis
 
-When a meter's balance drops below the threshold after a usage update, the bridge fires a POST request to the registered webhook URL.
+`POST /api/grid/scenarios/{id}/what-if`
 
-**Payload**
+Applies one or more overrides to a scenario and returns the delta against the
+baseline simulation.
+
+Request body:
 
 ```json
 {
-  "event": "low_balance",
-  "meter_id": "METER123",
-  "balance": 500000,
-  "threshold": 1000000,
-  "timestamp": "2025-05-27T10:30:00.000Z"
+  "overrides": [
+    { "nodeId": "gen-1", "field": "outputMw", "value": 300 },
+    { "nodeId": "load-1", "field": "demandMw", "value": 450 }
+  ]
 }
 ```
 
-**Fields**
+Response body:
 
-| Field       | Type   | Description                      |
-| ----------- | ------ | -------------------------------- |
-| `event`     | string | Always `"low_balance"`           |
-| `meter_id`  | string | The meter identifier             |
-| `balance`   | number | Current meter balance in stroops |
-| `threshold` | number | Configured threshold in stroops  |
-| `timestamp` | string | ISO 8601 timestamp of the event  |
+```json
+{
+  "baseline": { "unservedMw": 0, "peakDemandMw": 380 },
+  "modified": { "unservedMw": 70, "peakDemandMw": 450 },
+  "delta": { "unservedMw": 70, "peakDemandMw": 70 }
+}
+```
 
-**Error Handling**
+### Report generation
 
-- Failed webhook calls are logged but do not crash the IoT bridge
-- Webhook timeouts can be configured via your HTTP client settings
-- Consider idempotency keys on your webhook endpoint to handle retries
+`POST /api/grid/scenarios/{id}/report`
+
+Generates an impact report for a scenario (optionally with what-if overrides)
+for capacity planning.
+
+Request body:
+
+```json
+{
+  "format": "json",
+  "overrides": []
+}
+```
+
+Response body:
+
+```json
+{
+  "scenarioId": "peak-summer-demand",
+  "generatedAt": "2024-01-01T00:00:00Z",
+  "impact": {
+    "peakDemandMw": 380,
+    "unservedMw": 0,
+    "overloadedLinks": [],
+    "headroomMw": 120
+  },
+  "recommendations": [
+    "Generator gen-1 has 16% headroom at peak demand."
+  ]
+}
+```
+
+
+## API Key Management (#833)
+
+Providers can create API keys for programmatic access. Keys are stored as
+SHA-256 hashes (`api_keys` table: `id`, `provider_id`, `key_hash`,
+`permissions`, `expires_at`, `revoked_at`, …); the plaintext key is returned
+only once. Management routes require `X-Admin-Key` and `X-Provider-Id`.
+
+### `POST /api/keys/generate`
+
+Body: `{ "name"?: string, "permissions"?: ("read"|"write"|"admin")[], "expiresInDays"?: number }`
+
+`201` → `{ "key": "sg_…", "id": "…", "provider_id": "…", "permissions": ["read"], "expires_at": null, … }`
+
+### `GET /api/keys`
+
+Lists the provider's keys (no secrets): `{ "keys": [ … ] }`
+
+### `DELETE /api/keys/:keyId`
+
+Revokes a key. `204` on success, `404` if not found.
+
+### Authenticating with a key
+
+Send the key in the `X-API-Key` header. Routes protected with the
+`requireApiKey(permission?)` middleware respond `401` for missing, invalid,
+expired or revoked keys and `403` if the key lacks the required permission
+(`admin` implies all permissions).
+
+## Usage Prediction (#835)
+
+### `GET /api/meters/:meterId/prediction`
+
+Estimates when the meter balance will reach zero. A linear regression is fit
+to the meter's daily usage cost over the last 30 days and projected forward.
+Predictions are cached and refreshed daily (or when the balance changes).
+The balance is read from the contract unless `?balance=<stroops>` is given.
+
+```json
+{
+  "meterId": "METER1",
+  "balance": 3000,
+  "estimatedDaysRemaining": 30.0,
+  "confidenceInterval": { "low": 25.4, "high": 36.1, "level": 0.95 },
+  "avgDailyUsage": 100,
+  "trendPerDay": 0.1,
+  "trainingDays": 30,
+  "generatedAt": "2026-09-25T00:00:00.000Z"
+}
+```
+
+`estimatedDaysRemaining` is `null` when there is no usage history or usage is
+not trending toward depletion.
