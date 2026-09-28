@@ -333,6 +333,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -385,6 +393,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "max_capacity_watts"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "metadata"
                     },
                     "val": {
@@ -424,7 +440,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 4
+                      "u32": 5
                     }
                   }
                 ]
@@ -455,6 +471,33 @@
               "durability": "persistent",
               "val": {
                 "i128": "4000"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterSchemaVer"
+                  },
+                  {
+                    "string": "RFND2"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 5
               }
             }
           },
@@ -657,6 +700,14 @@
                       },
                       "val": {
                         "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "TOT_REV"
+                      },
+                      "val": {
+                        "i128": "5000"
                       }
                     }
                   ]
