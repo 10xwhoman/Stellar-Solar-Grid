@@ -1548,3 +1548,58 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Energy trading analytics (#873) ───────────────────────────────────────────
+
+  /api/analytics/market:
+    get:
+      summary: Energy trading analytics for the last 7, 30 or 90 days
+      description: |
+        Aggregates usage events (energy sold) into daily volume, value, trade
+        counts and volume-weighted prices (stroops per kWh), a trailing 7-day
+        average, a 7-day linear price forecast with a 95% band, hourly and
+        weekday trading patterns, top meters, comparison with the previous
+        period and generated market insights. Cached for 60 seconds.
+      operationId: getMarketAnalytics
+      tags: [analytics]
+      parameters:
+        - name: range
+          in: query
+          schema: { type: string, enum: ["7d", "30d", "90d"], default: "30d" }
+        - name: meter_id
+          in: query
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: Market analytics
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/analytics/market/export:
+    get:
+      summary: Download market analytics as CSV or PDF
+      operationId: exportMarketAnalytics
+      tags: [analytics]
+      parameters:
+        - name: range
+          in: query
+          schema: { type: string, enum: ["7d", "30d", "90d"], default: "30d" }
+        - name: format
+          in: query
+          schema: { type: string, enum: [csv, pdf], default: csv }
+        - name: meter_id
+          in: query
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: Daily rows (and forecast rows) as CSV, or a paginated PDF report
+          content:
+            text/csv:
+              schema: { type: string }
+            application/pdf:
+              schema: { type: string, format: binary }
+        "400":
+          $ref: "#/components/responses/ValidationError"
