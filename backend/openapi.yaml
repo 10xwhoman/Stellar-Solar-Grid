@@ -31,6 +31,14 @@ components:
   schemas:
     # ── Common ────────────────────────────────────────────────────────────────
 
+    EnergyForecastModel:
+      type: [object, "null"]
+      properties:
+        algorithm: { type: string, example: seasonal-ridge }
+        trainingSamples: { type: integer }
+        accuracyPct: { type: [number, "null"], minimum: 0, maximum: 100 }
+        trainedAt: { type: string, format: date-time }
+
     Error:
       type: object
       required: [error]
@@ -39,6 +47,25 @@ components:
           type: string
         code:
           type: string
+
+    ExportCertificate:
+      type: object
+      description: Renewable energy export certificate (#871)
+      required: [id, meterId, producer, owner, energyWh, energyKwh, periodStart, periodEnd, issuedAt, issuer, readingHash, retiredAt, status]
+      properties:
+        id: { type: string }
+        meterId: { type: string }
+        producer: { type: string, description: Meter owner at issuance }
+        owner: { type: string, description: Current holder }
+        energyWh: { type: string, description: Exported watt-hours (decimal string) }
+        energyKwh: { type: number }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        issuer: { type: string }
+        readingHash: { type: string, description: SHA-256 hex of the canonical reading payload }
+        retiredAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, retired] }
 
     TxHash:
       type: object
@@ -1549,57 +1576,77 @@ paths:
                         name: { type: string }
                         peakSunHours: { type: number }
 
-  # ── Energy trading analytics (#873) ───────────────────────────────────────────
-
-  /api/analytics/market:
+  /api/weather/energy-forecast:
     get:
-      summary: Energy trading analytics for the last 7, 30 or 90 days
+      summary: Forecast hourly energy production and consumption
       description: |
-        Aggregates usage events (energy sold) into daily volume, value, trade
-        counts and volume-weighted prices (stroops per kWh), a trailing 7-day
-        average, a 7-day linear price forecast with a 95% band, hourly and
-        weekday trading patterns, top meters, comparison with the previous
-        period and generated market insights. Cached for 60 seconds.
-      operationId: getMarketAnalytics
-      tags: [analytics]
+        Returns up to 48 hourly forecasts using a seasonal regression trained
+        on the preceding 90 days of meter usage and/or registered solar-panel
+        telemetry. OpenWeather hourly conditions are used to adjust estimates.
+        Accuracy is measured on held-out history and is null when unavailable.
+      operationId: getHourlyEnergyForecast
+      tags: [weather]
       parameters:
-        - name: range
+        - name: meterId
           in: query
-          schema: { type: string, enum: ["7d", "30d", "90d"], default: "30d" }
-        - name: meter_id
-          in: query
+          description: Meter whose historical milli-kWh usage should be forecast.
           schema: { type: string, maxLength: 64 }
+        - name: deviceId
+          in: query
+          description: Registered solar_panel device whose production should be forecast.
+          schema: { type: string, maxLength: 100 }
+        - name: lat
+          in: query
+          description: Latitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -90, maximum: 90 }
+        - name: lon
+          in: query
+          description: Longitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -180, maximum: 180 }
+        - name: hours
+          in: query
+          description: Forecast horizon in whole hours (default 48).
+          schema: { type: integer, minimum: 1, maximum: 48, default: 48 }
       responses:
         "200":
-          description: Market analytics
+          description: Hourly forecast and per-model holdout accuracy.
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                type: object
+                required: [horizonHours, generatedAt, location, weatherStale, models, forecast]
+                properties:
+                  meterId: { type: [string, "null"] }
+                  deviceId: { type: [string, "null"] }
+                  horizonHours: { type: integer, minimum: 1, maximum: 48 }
+                  generatedAt: { type: string, format: date-time }
+                  weatherStale: { type: boolean }
+                  models:
+                    type: object
+                    properties:
+                      production: { $ref: "#/components/schemas/EnergyForecastModel" }
+                      consumption: { $ref: "#/components/schemas/EnergyForecastModel" }
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      required: [timestamp, productionKwh, consumptionKwh, weather]
+                      properties:
+                        timestamp: { type: string, format: date-time }
+                        productionKwh: { type: [number, "null"] }
+                        consumptionKwh: { type: [number, "null"] }
+                        weather:
+                          type: object
+                          properties:
+                            temperatureC: { type: number }
+                            cloudCoverPct: { type: number }
+                            precipitationProbability: { type: number }
+                            condition: { type: string }
+                            productionFactor: { type: number }
+                            consumptionTemperatureFactor: { type: number }
         "400":
           $ref: "#/components/responses/ValidationError"
-
-  /api/analytics/market/export:
-    get:
-      summary: Download market analytics as CSV or PDF
-      operationId: exportMarketAnalytics
-      tags: [analytics]
-      parameters:
-        - name: range
-          in: query
-          schema: { type: string, enum: ["7d", "30d", "90d"], default: "30d" }
-        - name: format
-          in: query
-          schema: { type: string, enum: [csv, pdf], default: csv }
-        - name: meter_id
-          in: query
-          schema: { type: string, maxLength: 64 }
-      responses:
-        "200":
-          description: Daily rows (and forecast rows) as CSV, or a paginated PDF report
-          content:
-            text/csv:
-              schema: { type: string }
-            application/pdf:
-              schema: { type: string, format: binary }
-        "400":
-          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          description: Weather provider did not return a usable 48-hour forecast.
