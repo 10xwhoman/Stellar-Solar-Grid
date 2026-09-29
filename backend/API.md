@@ -2,25 +2,56 @@
 
 This document describes the backend HTTP API surface.
 
-## Native Push Notifications
+## Energy Forecasting Service (#881)
 
-`POST /api/push/native/subscribe`
+`GET /api/weather/energy-forecast`
 
-Registers an Expo Push Service token for an owner address. The mobile app sends
-the token only after the user grants notification permission.
+Returns hourly production and/or consumption estimates for up to 48 hours. At
+least one of `meterId` or `deviceId` is required. A `deviceId` must identify a
+registered `solar_panel`; its `ratedPowerW`, `latitude`, and `longitude` specs
+are used when available. `lat` and `lon` may be supplied explicitly and are
+required for meter-only requests. `hours` defaults to 48 and may be an integer
+from 1 through 48.
+
+Example:
+
+```text
+GET /api/weather/energy-forecast?meterId=METER_01&deviceId=PANEL_01&hours=48
+```
+
+Consumption training reads the previous 90 days of meter usage and converts
+the platform's milli-kWh event units to kWh. Production training uses the
+previous 90 days of registered solar-panel performance telemetry. Both models
+use a regularized seasonal regression over hour-of-day and weekday features;
+missing hours are treated as zero. OpenWeather hourly cloud cover and
+temperature adjust production estimates; temperature adjusts consumption
+estimates. Precipitation probability is included as forecast context. Models retrain at
+startup and every six hours by default; configure the interval with
+`ENERGY_FORECAST_RETRAIN_INTERVAL_MS`.
+
+The response includes per-stream `trainingSamples`, `accuracyPct`, and
+`trainedAt`. Accuracy is a held-out weighted absolute-error score and is `null`
+when there is no usable validation history; the service does not claim a fixed
+accuracy for meters or sites without representative historical data.
 
 ```json
 {
-  "ownerAddress": "G...",
-  "token": "ExponentPushToken[device-token]",
-  "platform": "ios"
+  "horizonHours": 48,
+  "weatherStale": false,
+  "models": {
+    "production": { "algorithm": "seasonal-ridge", "trainingSamples": 1200, "accuracyPct": 91.2 },
+    "consumption": { "algorithm": "seasonal-ridge", "trainingSamples": 2160, "accuracyPct": 88.5 }
+  },
+  "forecast": [
+    {
+      "timestamp": "2026-09-29T12:00:00.000Z",
+      "productionKwh": 2.15,
+      "consumptionKwh": 0.42,
+      "weather": { "temperatureC": 22, "cloudCoverPct": 18, "productionFactor": 0.91 }
+    }
+  ]
 }
 ```
-
-`POST /api/push/native/unsubscribe` accepts `{ "token": "ExponentPushToken[...]" }`.
-Low-balance alerts are delivered to both native Expo tokens and existing web
-push subscriptions. Expo delivery requires a physical device and an EAS
-project configured with APNs/FCM credentials.
 
 ## Energy Grid Simulation Tool (#909)
 
