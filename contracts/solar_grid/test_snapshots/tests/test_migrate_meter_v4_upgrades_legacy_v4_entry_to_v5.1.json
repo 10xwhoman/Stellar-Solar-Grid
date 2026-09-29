@@ -201,6 +201,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "1000"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "last_payment"
                     },
                     "val": {
@@ -213,14 +221,6 @@
                     },
                     "val": {
                       "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "metadata"
-                    },
-                    "val": {
-                      "map": []
                     }
                   },
                   {
@@ -256,7 +256,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 5
+                      "u32": 7
                     }
                   }
                 ]
@@ -277,7 +277,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "MeterSchemaVer"
+                    "symbol": "MeterMetadata"
                   },
                   {
                     "string": "MIG_V4"
@@ -286,7 +286,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 5
+                "map": []
               }
             }
           },

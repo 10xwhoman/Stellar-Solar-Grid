@@ -227,6 +227,210 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "allowlist_add"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "allowlist_add"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "1"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "2"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "batch_register_meters"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "2"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Meter"
                   },
                   {
@@ -299,6 +503,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "last_payment"
                     },
                     "val": {
@@ -311,14 +523,6 @@
                     },
                     "val": {
                       "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "metadata"
-                    },
-                    "val": {
-                      "map": []
                     }
                   },
                   {
@@ -354,7 +558,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 5
+                      "u32": 7
                     }
                   }
                 ]
@@ -447,6 +651,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "last_payment"
                     },
                     "val": {
@@ -459,14 +671,6 @@
                     },
                     "val": {
                       "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "metadata"
-                    },
-                    "val": {
-                      "map": []
                     }
                   },
                   {
@@ -502,7 +706,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 5
+                      "u32": 7
                     }
                   }
                 ]
@@ -665,6 +869,14 @@
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "AUD_CNT"
+                      },
+                      "val": {
+                        "u64": "3"
                       }
                     },
                     {
