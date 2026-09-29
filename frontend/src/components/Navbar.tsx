@@ -22,6 +22,7 @@ export default function Navbar() {
     { href: "/pay", label: t("pay") },
     { href: "/dashboard/provider", label: t("provider") },
     { href: "/history", label: t("history") },
+    { href: "/analytics", label: t("analytics") },
     { href: "/bills", label: t("bills") },
     { href: "/communities", label: t("communities") },
     { href: "/competitions", label: t("competitions") },
