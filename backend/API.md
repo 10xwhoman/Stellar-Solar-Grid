@@ -2,6 +2,26 @@
 
 This document describes the backend HTTP API surface.
 
+## Native Push Notifications
+
+`POST /api/push/native/subscribe`
+
+Registers an Expo Push Service token for an owner address. The mobile app sends
+the token only after the user grants notification permission.
+
+```json
+{
+  "ownerAddress": "G...",
+  "token": "ExponentPushToken[device-token]",
+  "platform": "ios"
+}
+```
+
+`POST /api/push/native/unsubscribe` accepts `{ "token": "ExponentPushToken[...]" }`.
+Low-balance alerts are delivered to both native Expo tokens and existing web
+push subscriptions. Expo delivery requires a physical device and an EAS
+project configured with APNs/FCM credentials.
+
 ## Energy Grid Simulation Tool (#909)
 
 The simulation tool lets operators test grid scenarios, inspect grid state,
