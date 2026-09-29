@@ -1,3 +1,6 @@
+import { env } from "@/lib/env";
+import { buildTraceparent } from "@/lib/tracing";
+
 /**
  * Fetch wrapper that adds AbortController timeout to prevent indefinite hangs
  * Configurable via NEXT_PUBLIC_REQUEST_TIMEOUT_MS env var (default: 10000ms)
@@ -7,11 +10,7 @@ export async function fetchWithTimeout(
   options: RequestInit = {},
   timeoutMs?: number,
 ): Promise<Response> {
-  const timeout =
-    timeoutMs ??
-    (typeof window !== "undefined"
-      ? parseInt(process.env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS || "10000")
-      : 10000);
+  const timeout = timeoutMs ?? env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -19,6 +18,9 @@ export async function fetchWithTimeout(
   try {
     const response = await fetch(url, {
       ...options,
+      // #763 — propagate a W3C traceparent so this request joins the
+      // backend's trace instead of starting a disconnected one.
+      headers: { traceparent: buildTraceparent(), ...options.headers },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);

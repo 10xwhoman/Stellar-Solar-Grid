@@ -1,250 +1,252 @@
 import "dotenv/config";
+import "dotenv/config";
+import { randomUUID } from "node:crypto";
+import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
-import timeout from "connect-timeout";
 import mqtt from "mqtt";
+import { statSync } from "node:fs";
+import timeout from "connect-timeout";
 import helmet from "helmet";
+import compression from "compression";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
+import rateLimit from "express-rate-limit";
+import * as OpenApiValidator from "express-openapi-validator";
+
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
+import { receiptsRouter } from "./routes/receipts.js";
+import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { auditRouter } from "./routes/audit.js";
+import { socialRouter } from "./routes/social.js";
+import { startLeaderboardScheduler } from "./lib/social.js";
+import { startIoTBridge } from "./iot/bridge.js";
+import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
-import { statsRouter } from "./routes/stats.js";
+import { adminLoginRouter } from "./routes/adminLogin.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { providerRouter } from "./routes/provider.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { loadBalancingRouter } from "./routes/loadBalancing.js";
 import { twoFactorRouter } from "./routes/twoFactor.js";
 import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
 import { startIoTBridge } from "./iot/bridge.js";
+import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
+import { solarRouter } from "./routes/solar.js";
+import { usageEventsRouter } from "./routes/usageEvents.js";
+import { analyticsRouter } from "./routes/analytics.js";
+import { insightsRouter } from "./routes/insights.js";
+import { graphqlRouter } from "./routes/graphql.js";
+import { usageRouter } from "./routes/usage.js";
+import { meterMapRouter } from "./routes/meterMap.js";
+import { delegatesRouter } from "./routes/delegates.js";
+import { apiKeysRouter } from "./routes/apiKeys.js";
+import { meterHealthRouter } from "./routes/meterHealth.js";
+import { predictionRouter } from "./routes/prediction.js";
+import { billingRouter } from "./routes/billing.js";
+import { competitionsRouter } from "./routes/competitions.js";
+import { smartHomeRouter } from "./routes/smartHome.js";
+import { widgetsRouter } from "./routes/widgets.js";
+import { startBillingScheduler } from "./lib/billing.js";
+import { startCompetitionScheduler } from "./lib/competitions.js";
+import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
+import { startHealthMonitor } from "./lib/meterHealth.js";
+import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
-import { register } from "./lib/metrics.js";
-import { writeLimiter, readLimiter } from "./middleware/rateLimit.js";
+import { runWithRequestId } from "./lib/requestContext.js";
+import { requestLogger } from "./lib/requestLogger.js";
+import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
+import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
+import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
+import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
-import rateLimit from "express-rate-limit";
+import { tracingMiddleware } from "./middleware/tracing.js";
+import { shutdownTracing } from "./lib/tracing.js";
+import { getCircuitState } from "./lib/circuitBreaker.js";
 import {
+  countDeadLetterEvents,
+  getUsageEventPoolStatus,
   initUsageEventStore,
   startUsageEventRetryWorker,
+  startUsageCompactionWorker,
 } from "./lib/usageEvents.js";
-import { createRequire } from "module";
+import { initMeterNotesStore, getMeterNotesPoolStatus } from "./lib/meterNotes.js";
+import { getUsageHistoryPoolStatus } from "./lib/usageHistory.js";
+import { closeAllDatabases } from "./lib/databaseLifecycle.js";
+import { getReqId } from "./lib/requestContext.js";
+import { exportRouter } from "./routes/export.js";
+// Issue #696: Import idempotency cleanup for graceful shutdown
+import { _stopEvictionTimer } from "./middleware/idempotency.js";
+import { buildHealthResponse } from "./lib/health.js";
+import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 
+// â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
+// imports the parsed values so there is a single source of truth shared with
+// middleware/rateLimit.ts.
+import {
+  RATE_LIMIT_WINDOW_MS,
+  RATE_LIMIT_MAX,
+  PAYMENTS_RATE_LIMIT_MAX,
+  RATE_LIMIT_MESSAGE,
+} from "./config/rateLimits.js";
+
+// â”€â”€ Bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const _require = createRequire(import.meta.url);
 const { version } = _require("../../package.json") as { version: string };
 
-const REQUIRED_ENV = ["CONTRACT_ID", "ADMIN_SECRET_KEY", "STELLAR_RPC_URL", "MQTT_BROKER"];
+const REQUIRED_ENV = [
+  "CONTRACT_ID",
+  "ADMIN_SECRET_KEY",
+  "ADMIN_API_KEY",
+  "MQTT_BROKER",
+];
 const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (!process.env.STELLAR_RPC_URL && !process.env.STELLAR_RPC_URLS) {
+  missing.push("STELLAR_RPC_URL (or STELLAR_RPC_URLS)");
+}
 if (missing.length > 0) {
   logger.fatal(
     { missing },
-    "Missing required environment variables. Copy backend/.env.example to backend/.env."
+    "Missing required environment variables. Copy backend/.env.example to backend/.env.",
   );
   process.exit(1);
 }
 
 const PORT = process.env.PORT ?? 3001;
-// #423: configurable body size limit
 const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
+const STARTED_AT = Date.now();
 
 const app = express();
-const startTime = Date.now();
+app.use(cors());
+app.use(express.json());
 
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'none'"],
-      scriptSrc: ["'self'"],
-      connectSrc: ["'self'"],
-    },
-  },
-  hsts: { maxAge: 31536000, includeSubDomains: true },
-}));
-
-app.use(
-  cors({
-    origin: process.env.FRONTEND_ORIGIN ?? "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
-    optionsSuccessStatus: 204,
-  })
-);
-
-const allowedOrigins = (process.env.CORS_ORIGIN ?? '*').split(',').map(o => o.trim());
-
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Origin ${origin} not allowed by CORS`));
-    }
-  },
-  credentials: true,
-}));
-
-app.use(readLimiter);
-
-// Capture raw body for webhook signature verification before JSON parsing
-// Capture raw body for webhook signature verification before JSON parsing.
-// #423: apply body size limit
-app.use(
-  express.json({
-    limit: BODY_LIMIT,
-    verify: (req: any, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
-app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
-
-app.use(sanitiseBody);
-app.use(requestLoggerMiddleware);
-
-// Request timeout — configurable via REQUEST_TIMEOUT env var (default 15s)
-const requestTimeout = process.env.REQUEST_TIMEOUT ?? "15s";
-app.use(timeout(requestTimeout));
-
-app.use((req: any, _res: any, next: any) => {
-  if (!req.timedout) next();
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
 });
 
-// Rate limiting configuration (driven by env vars)
-const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60 * 1000);
-const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 60);
-const PAYMENTS_RATE_LIMIT_MAX = Number(process.env.PAYMENTS_RATE_LIMIT_MAX ?? 10);
-const RATE_LIMIT_MESSAGE = process.env.RATE_LIMIT_MESSAGE ?? 'Too many requests, please try again later.';
-
-const globalLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: RATE_LIMIT_MAX,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: (_req, res) => {
-    // Provide Retry-After in seconds
-    res.setHeader('Retry-After', String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)));
-    res.status(429).json({ error: RATE_LIMIT_MESSAGE });
-  },
-});
-
-const paymentsLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: PAYMENTS_RATE_LIMIT_MAX,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: (_req, res) => {
-    res.setHeader('Retry-After', String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)));
-    res.status(429).json({ error: RATE_LIMIT_MESSAGE });
-  },
-});
-
-// Apply global limiter to all /api routes
-app.use('/api', globalLimiter);
-
-app.use((req, _res, next) => {
-  logger.info({ method: req.method, path: req.path });
-  next();
-});
-
-// ── Routes ────────────────────────────────────────────────────────────────────
+interface MeterFirmware {
+  meterId: string;
+  firmwareVersion: string;
+  reportedAt: string;
+}
 
 app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", writeLimiter, paymentsRouter);
-app.use("/api/webhooks", writeLimiter, webhookRouter);
-app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/social", socialRouter);
+startLeaderboardScheduler();
+const firmwareByMeter = new Map<string, MeterFirmware>();
+
+const LATEST_FIRMWARE_VERSION = process.env.LATEST_FIRMWARE_VERSION || '1.0.0';
+
+function isOutdated(version: string): boolean {
+  return version !== LATEST_FIRMWARE_VERSION;
+}
+
+app.use("/api/admin", writeLimiter, adminLoginRouter);
+app.use("/api/meters/map", meterMapRouter);
+app.use("/api/keys", writeLimiter, apiKeysRouter);
+app.use("/api/meters", meterHealthRouter);
+app.use("/api/meters", predictionRouter);
+startHealthMonitor();
+// Body parsing above makes payer/owner available before this limiter runs.
+// Missing payer identities remain governed by the global IP limiter.
+app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
+app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
+app.use("/api/export", exportRouter);
+app.use("/api/delegates", writeLimiter, delegatesRouter);
+app.use("/api/webhooks", writeLimiter, webhookRouter);
+app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
-app.use("/api/allowlist", allowlistRouter);
-app.use("/api/collaborators", collaboratorRouter);
-app.use("/api/stats", statsRouter);
-app.use("/api/provider", providerRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
+app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/load-balancing", loadBalancingRouter);
 app.use("/api/2fa", writeLimiter, twoFactorRouter);
 app.use("/api/trading", tradingRouter);
+app.use("/api/usage-events", usageEventsRouter);
+app.use("/api/usage", usageRouter);
+app.use("/api/analytics", analyticsRouter);
+app.use("/api/meters", insightsRouter);
+app.use("/api/graphql", graphqlRouter);
+app.use("/graphql", graphqlRouter);
+app.use("/api/provider", providerRouter);
+// #901–#904: widgets, billing, competitions, smart home
+app.use("/api/widgets", widgetsRouter);
+app.use("/api/billing", writeLimiter, billingRouter);
+app.use("/api/competitions", competitionsRouter);
+app.use("/api/smart-home", smartHomeRouter);
+setRelaySender(sendRelayCommand);
+startBillingScheduler();
+startCompetitionScheduler();
+startSmartHomeScheduler();
 
-// #420: GET /api/health — version, uptime, dependency status
-app.get("/api/health", async (_req, res) => {
-  const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+// â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  // Check Stellar RPC
-  let rpcOk = false;
+const mqttUrl = process.env.MQTT_URL || 'mqtt://localhost:1883';
+const mqttClient = mqtt.connect(mqttUrl);
+
+mqttClient.on('connect', () => {
+  mqttClient.subscribe('meters/+/telemetry');
+});
+
+mqttClient.on('message', (topic: string, payload: Buffer) => {
   try {
-    await server.getLatestLedger();
-    rpcOk = true;
-  } catch {
-    logger.warn("Stellar RPC health check failed");
+    const data = JSON.parse(payload.toString());
+    const parts = topic.split('/');
+    const meterId = data.meterId || parts[1];
+    if (!meterId) {
+      return;
+    }
+    if (typeof data.firmware_version === 'string' && data.firmware_version.length > 0) {
+      const record = recordFirmware(meterId, data.firmware_version);
+      if (isOutdated(record.firmwareVersion)) {
+        console.warn(
+          `Meter ${meterId} is running outdated firmware ${record.firmwareVersion} (latest ${LATEST_FIRMWARE_VERSION})`
+        );
+      }
+    }
+  } catch (err) {
+    console.error('Failed to parse MQTT payload', err);
   }
+});
 
-  // Check MQTT
-  let mqttOk = false;
-  try {
-    const { getMqttClient } = await import("./iot/bridge.js");
-    const client = getMqttClient();
-    mqttOk = client?.connected ?? false;
-  } catch {
-    logger.warn("MQTT health check failed");
-  }
-
-  const healthy = rpcOk && mqttOk;
-  res.status(healthy ? 200 : 503).json({
-    status: healthy ? "ok" : "degraded",
-    version,
-    uptimeSec,
-    dependencies: {
-      stellarRpc: rpcOk ? "ok" : "unreachable",
-      mqtt: mqttOk ? "ok" : "unreachable",
-    },
+app.get('/api/meters/firmware-report', (_req: Request, res: Response) => {
+  const report = Array.from(firmwareByMeter.values()).map((record) => ({
+    ...record,
+    outdated: isOutdated(record.firmwareVersion),
+  }));
+  res.json({
+    latestFirmwareVersion: LATEST_FIRMWARE_VERSION,
+    meters: report,
   });
 });
 
-app.get("/metrics", async (_req, res) => {
-  res.set("Content-Type", register.contentType);
-  res.end(await register.metrics());
-});
-
-// #418: 404 catch-all — must come after all routes
-app.use((_req: Request, res: Response) => {
-  res.status(404).json({
-    error: "Route not found",
-    code: "NOT_FOUND",
-    hint: "Check /api/docs for available endpoints",
+app.get('/api/meters/:meterId/firmware', (req: Request, res: Response) => {
+  const record = firmwareByMeter.get(req.params.meterId);
+  if (!record) {
+    return res.status(404).json({ error: 'No firmware version recorded for meter' });
+  }
+  res.json({
+    ...record,
+    outdated: isOutdated(record.firmwareVersion),
+    latestFirmwareVersion: LATEST_FIRMWARE_VERSION,
   });
 });
 
-// Timeout error handler
-app.use((err: any, req: any, res: any, next: any) => {
-  if (req.timedout) {
-    logger.error("Request timed out", { method: req.method, path: req.path });
-    return res.status(504).json({ error: "Request timed out", code: "TIMEOUT" });
-  }
-  next(err);
-});
-
-// #423: 413 payload too large handler + global error handler (#418)
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  logger.error({ error: err.message, stack: err.stack }, "Unhandled error");
-
-  if (err.type === "entity.too.large") {
-    return res.status(413).json({ error: "Request body too large", code: "PAYLOAD_TOO_LARGE" });
-  }
-  if (err.type === "entity.parse.failed" || (err instanceof SyntaxError && (err as any).body !== undefined)) {
-    return res.status(400).json({ error: "Invalid JSON body", code: "INVALID_JSON" });
-  }
-  if ((err as any).status === 404) {
-    return res.status(404).json({ error: "Resource not found", code: "NOT_FOUND" });
-  }
-  if ((err as any).code === "VALIDATION_ERROR" && (err as any).details) {
-    return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", details: (err as any).details });
-  }
-  res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR" });
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok' });
 });
 
 const httpServer = app.listen(PORT, () => {
@@ -260,3 +262,11 @@ const httpServer = app.listen(PORT, () => {
   }
 });
 attachTradingWebSocket(httpServer);
+const port = Number(process.env.PORT) || 3000;
+app.listen(port, () => {
+  console.log(`Backend listening on port ${port}`);
+  startEventIndexer();
+  startRecommendationWorker();
+});
+
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter };

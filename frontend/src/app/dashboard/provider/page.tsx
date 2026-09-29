@@ -1,15 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import { MeterStatusBadge } from "@/components/MeterStatusBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
+import { Skeleton } from "@/components/Skeleton";
 import { useToast } from "@/components/ToastProvider";
 import { getAllMeters, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { MeterComparison } from "@/components/MeterComparison";
+import { env } from "@/lib/env";
 
-const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+const API = env.NEXT_PUBLIC_BACKEND_URL;
 
 /** Stellar public keys: G + 55 base32 chars (56 total) */
 function isValidStellarAddress(addr: string): boolean {
@@ -18,7 +22,17 @@ function isValidStellarAddress(addr: string): boolean {
 
 type Status = "idle" | "loading";
 
+export const dynamic = "force-dynamic";
+
 export default function ProviderDashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProviderDashboardPageContent />
+    </Suspense>
+  );
+}
+
+function ProviderDashboardPageContent() {
   const { showToast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -33,6 +47,7 @@ export default function ProviderDashboardPage() {
   const [meters, setMeters] = useState<MeterData[]>([]);
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [showComparison, setShowComparison] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -61,7 +76,7 @@ export default function ProviderDashboardPage() {
 
   const filteredMeters = meters.filter((m) => m.owner.toLowerCase().includes(search.toLowerCase()));
 
-  const EXPLORER_BASE = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE?.includes("Test")
+  const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
 
@@ -165,7 +180,7 @@ export default function ProviderDashboardPage() {
   return (
     <ErrorBoundary>
       <Navbar />
-      <main className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
+      <main id="main-content" tabIndex={-1} className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
         <div className="w-full max-w-md">
           <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">
             Provider Dashboard
@@ -255,8 +270,12 @@ export default function ProviderDashboardPage() {
                     className="rounded-xl border border-white/10 bg-solar-accent px-5 py-4 text-center"
                   >
                     <p className="text-xs uppercase tracking-wider text-gray-500 mb-1">{label}</p>
-                    <p className={`text-2xl font-bold ${color ?? "text-white"}`}>
-                      {fetching ? "—" : value}
+                    <p className={`text-2xl font-bold ${color ?? "text-white"} flex justify-center`}>
+                      {fetching && meters.length === 0 ? (
+                        <Skeleton width="2.5rem" height={28} />
+                      ) : (
+                        value
+                      )}
                     </p>
                   </div>
                 ))}
@@ -269,40 +288,64 @@ export default function ProviderDashboardPage() {
         <div className="w-full max-w-5xl">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-white">Registered Meters</h2>
-            <button
-              onClick={fetchMeters}
-              disabled={fetching}
-              className="text-xs text-gray-400 hover:text-solar-yellow transition flex items-center gap-1"
-            >
-              {fetching ? "Refreshing..." : "↻ Refresh List"}
-            </button>
+            <div className="flex items-center gap-2">
+              {meters.length >= 2 && (
+                <button
+                  onClick={() => setShowComparison(!showComparison)}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
+                    showComparison
+                      ? "bg-solar-yellow text-solar-dark"
+                      : "bg-solar-accent text-gray-300 hover:bg-solar-accent/80"
+                  }`}
+                >
+                  {showComparison ? "Hide" : "Compare"}
+                </button>
+              )}
+              <button
+                onClick={fetchMeters}
+                disabled={fetching}
+                className="text-xs text-gray-400 hover:text-solar-yellow transition flex items-center gap-1"
+              >
+                {fetching ? "Refreshing..." : "↻ Refresh List"}
+              </button>
+            </div>
           </div>
+
+          {/* Comparison View */}
+          {showComparison && (
+            <div className="mb-6">
+              <MeterComparison meters={filteredMeters} isLoading={fetching} />
+            </div>
+          )}
 
           {/* Search Input — focus with "/" shortcut */}
-          <div className="relative mb-4">
-            <input
-              ref={searchInputRef}
-              type="search"
-              placeholder="Search by owner address… (press / to focus)"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setSearch("");
-              }}
-              className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
-            />
-            {search && (
-              <button
-                onClick={() => setSearch("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition"
-                aria-label="Clear search"
-              >
-                ✕
-              </button>
-            )}
-          </div>
+          {!showComparison && (
+            <div className="relative mb-4">
+              <input
+                ref={searchInputRef}
+                type="search"
+                placeholder="Search by owner address… (press / to focus)"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setSearch("");
+                }}
+                className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition"
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          )}
 
-          <div className="rounded-xl border border-white/10 bg-solar-accent overflow-hidden">
+          {!showComparison && (
+            <div className="rounded-xl border border-white/10 bg-solar-accent overflow-hidden">
             <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
               <table className="w-full text-left text-sm text-gray-300">
                 <thead className="border-b border-white/10 bg-white/5 text-xs uppercase tracking-wider text-gray-400">
@@ -419,6 +462,7 @@ export default function ProviderDashboardPage() {
               </table>
             </div>
           </div>
+          )}
         </div>
       </main>
     </ErrorBoundary>

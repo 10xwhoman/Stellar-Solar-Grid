@@ -1,5 +1,7 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { useWalletStore } from "@/store/walletStore";
+import { env } from "@/lib/env";
+import { padResourceFee as padFee } from "@/lib/fees";
 
 export interface MeterData {
   version: number;
@@ -10,13 +12,29 @@ export interface MeterData {
   last_payment: bigint;
   expires_at: bigint;
   balance: bigint;
+  grace_expires_at?: bigint | null;
   meter_id?: string;
+  /** Max stroops deductible per day; 0 = unlimited (closes #758). */
+  daily_limit?: bigint;
+  /** Stroops spent in the current daily window (closes #758). */
+  day_spent?: bigint;
+  /** True (default) if exceeding daily_limit blocks usage; false = warn only. */
+  auto_deactivate?: boolean;
 }
 
-const REQUEST_TIMEOUT_MS =
-  typeof window !== "undefined"
-    ? parseInt(process.env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS || "10000")
-    : 10000;
+const REQUEST_TIMEOUT_MS = env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS;
+
+/**
+ * #762 — Pad the assembled transaction fee (classic fee + simulated resource
+ * fee) by a safety margin before the wallet signs it. `simulateTransaction`'s
+ * resource-fee estimate is a point-in-time snapshot; actual cost can drift
+ * by submission time, and that drift scales with how many ledger entries the
+ * operation touches — a fixed percentage margin therefore scales with it too.
+ * Mirrors backend/src/lib/stellar.ts's padResourceFee.
+ */
+export function padResourceFee(assembledFee: string): string {
+  return padFee(assembledFee, env.NEXT_PUBLIC_FEE_SAFETY_MARGIN_PCT);
+}
 
 export class ContractClient {
   private server: StellarSdk.SorobanRpc.Server;
@@ -86,6 +104,10 @@ export class ContractClient {
     }
 
     tx = StellarSdk.SorobanRpc.assembleTransaction(tx, sim).build();
+    const paddedFee = padResourceFee(tx.fee);
+    if (paddedFee !== tx.fee) {
+      tx = StellarSdk.TransactionBuilder.cloneFrom(tx, { fee: paddedFee }).build();
+    }
 
     const { signTransaction } = useWalletStore.getState();
     const signedXdr = await signTransaction(tx.toXDR());
@@ -101,9 +123,9 @@ export class ContractClient {
 }
 
 export const client = new ContractClient(
-  process.env.NEXT_PUBLIC_CONTRACT_ID!,
-  process.env.NEXT_PUBLIC_RPC_URL ?? "https://soroban-testnet.stellar.org",
-  process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? StellarSdk.Networks.TESTNET,
+  env.NEXT_PUBLIC_CONTRACT_ID,
+  env.NEXT_PUBLIC_RPC_URL,
+  env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
 );
 
 export async function fetchMeter(meterId: string): Promise<MeterData> {
@@ -139,15 +161,103 @@ export async function checkMeterAccess(meterId: string): Promise<boolean> {
   return StellarSdk.scValToNative(retval) as boolean;
 }
 
+/** Read the contract-wide emergency pause state for the global banner. */
+export async function isContractPaused(): Promise<boolean> {
+  const retval = await client.query("is_paused", []);
+  return StellarSdk.scValToNative(retval) as boolean;
+}
+
 export async function fetchAllMeters(): Promise<MeterData[]> {
-  const [dataRetval, idsRetval] = await Promise.all([
-    client.query("get_all_meters", []),
-    client.query("get_all_meters_paginated", [
-      StellarSdk.nativeToScVal(0, { type: "u32" }),
-      StellarSdk.nativeToScVal(100, { type: "u32" }),
-    ]).catch(() => null),
+  const allMeters: MeterData[] = [];
+  const pageSize = 50; // Fetch 50 meters per page to respect Soroban read limits
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    try {
+      const pageIds = await fetchMetersPaginated(offset, pageSize);
+      if (pageIds.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      // Fetch full meter details for each ID on this page
+      const pageMeters = await Promise.all(
+        pageIds.map(async (meterId) => {
+          try {
+            const meter = await fetchMeter(meterId);
+            return meter;
+          } catch (error) {
+            console.warn(`Failed to fetch meter ${meterId}:`, error);
+            return null;
+          }
+        }),
+      );
+
+      // Filter out failed fetches and add to results
+      const validMeters = pageMeters.filter((m) => m !== null) as MeterData[];
+      allMeters.push(...validMeters);
+
+      // Check if we got less than a full page (means we reached the end)
+      if (pageIds.length < pageSize) {
+        hasMore = false;
+      }
+
+      offset += pageSize;
+    } catch (error) {
+      console.error("Error fetching meters page:", error);
+      hasMore = false;
+    }
+  }
+
+  return allMeters;
+}
+
+export async function fetchMetersPaginated(offset: number, limit: number): Promise<string[]> {
+  const retval = await client.query("get_all_meters_paginated", [
+    StellarSdk.nativeToScVal(offset, { type: "u32" }),
+    StellarSdk.nativeToScVal(limit, { type: "u32" }),
   ]);
-  const rawMeters = StellarSdk.scValToNative(dataRetval) as MeterData[];
-  const meterIds: string[] = idsRetval ? (StellarSdk.scValToNative(idsRetval) as string[]) : [];
-  return rawMeters.map((m, i) => ({ ...m, balance: 0n, meter_id: meterIds[i] }));
+  return StellarSdk.scValToNative(retval) as string[];
+}
+
+export async function transferMeterOwnership(
+  sourceAddress: string,
+  meterId: string,
+  newOwnerAddress: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "transfer_meter_ownership", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(newOwnerAddress, { type: "address" }),
+  ]);
+}
+
+// ── Energy token staking (#899) ─────────────────────────────────────────────
+
+const addrVal = (a: string) => StellarSdk.nativeToScVal(a, { type: "address" });
+const i128Val = (v: bigint) => StellarSdk.nativeToScVal(v, { type: "i128" });
+
+/** Stake `amount` (base units, 7 decimals) of the energy token. */
+export function stakeTokens(staker: string, amount: bigint): Promise<string> {
+  return contractInvoke(staker, "stake", [addrVal(staker), i128Val(amount)]);
+}
+
+/** Start the unstake cooldown for `amount`. */
+export function requestUnstake(staker: string, amount: bigint): Promise<string> {
+  return contractInvoke(staker, "request_unstake", [addrVal(staker), i128Val(amount)]);
+}
+
+/** Withdraw tokens whose cooldown has elapsed. */
+export function withdrawUnstaked(staker: string): Promise<string> {
+  return contractInvoke(staker, "withdraw_unstaked", [addrVal(staker)]);
+}
+
+/** Put cooling-down tokens back into the active stake. */
+export function cancelUnstake(staker: string): Promise<string> {
+  return contractInvoke(staker, "cancel_unstake", [addrVal(staker)]);
+}
+
+/** Claim all accrued staking rewards. */
+export function claimStakingRewards(staker: string): Promise<string> {
+  return contractInvoke(staker, "claim_staking_rewards", [addrVal(staker)]);
 }
