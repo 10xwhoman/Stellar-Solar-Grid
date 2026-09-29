@@ -22,6 +22,7 @@ export default function Navbar() {
     { href: "/dashboard/provider", label: t("provider") },
     { href: "/history", label: t("history") },
     { href: "/bills", label: t("bills") },
+    { href: "/certificates", label: t("certificates") },
     { href: "/competitions", label: t("competitions") },
     { href: "/smart-home", label: t("smartHome") },
   ];

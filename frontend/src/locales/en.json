@@ -6,6 +6,7 @@
     "provider": "Provider",
     "history": "History",
     "bills": "Bills",
+    "certificates": "Certificates",
     "competitions": "Competitions",
     "smartHome": "Smart Home",
     "toggleTheme": "Toggle Theme",
