@@ -27,7 +27,11 @@ fn setup() -> Staking {
         .address();
     fx.client
         .configure_staking(&stake_token, &reward_token, &RATE, &COOLDOWN);
-    Staking { fx, stake_token, reward_token }
+    Staking {
+        fx,
+        stake_token,
+        reward_token,
+    }
 }
 
 impl Staking {
@@ -57,8 +61,14 @@ impl Staking {
 fn staking_requires_configuration() {
     let fx = Fixture::new();
     let s = Address::generate(&fx.env);
-    assert_eq!(fx.client.try_stake(&s, &10), Err(Ok(ContractError::StakingNotConfigured)));
-    assert_eq!(fx.client.try_get_staking_config(), Err(Ok(ContractError::StakingNotConfigured)));
+    assert_eq!(
+        fx.client.try_stake(&s, &10),
+        Err(Ok(ContractError::StakingNotConfigured))
+    );
+    assert_eq!(
+        fx.client.try_get_staking_config(),
+        Err(Ok(ContractError::StakingNotConfigured))
+    );
 }
 
 #[test]
@@ -82,7 +92,8 @@ fn configure_rejects_payment_token_and_bad_values() {
         Err(Ok(ContractError::InvalidConfiguration))
     );
     assert_eq!(
-        fx.client.try_configure_staking(&other, &other, &1, &(91 * 86_400)),
+        fx.client
+            .try_configure_staking(&other, &other, &1, &(91 * 86_400)),
         Err(Ok(ContractError::InvalidConfiguration))
     );
 }
@@ -168,7 +179,10 @@ fn request_unstake_rejects_more_than_staked() {
         st.fx.client.try_request_unstake(&alice, &101),
         Err(Ok(ContractError::InsufficientStake))
     );
-    assert_eq!(st.fx.client.try_request_unstake(&alice, &0), Err(Ok(ContractError::InvalidAmount)));
+    assert_eq!(
+        st.fx.client.try_request_unstake(&alice, &0),
+        Err(Ok(ContractError::InvalidAmount))
+    );
 }
 
 #[test]
@@ -211,7 +225,10 @@ fn pause_blocks_stake_but_not_exits() {
 
     let bob = Address::generate(&st.fx.env);
     st.mint_stake(&bob, 10);
-    assert_eq!(st.fx.client.try_stake(&bob, &10), Err(Ok(ContractError::ContractPaused)));
+    assert_eq!(
+        st.fx.client.try_stake(&bob, &10),
+        Err(Ok(ContractError::ContractPaused))
+    );
 
     st.fx.advance(5);
     assert_eq!(st.fx.client.claim_staking_rewards(&alice), 50);
@@ -230,7 +247,9 @@ fn stake_token_cannot_change_while_funds_are_held() {
         .register_stellar_asset_contract_v2(Address::generate(&st.fx.env))
         .address();
     assert_eq!(
-        st.fx.client.try_configure_staking(&other, &st.reward_token, &RATE, &COOLDOWN),
+        st.fx
+            .client
+            .try_configure_staking(&other, &st.reward_token, &RATE, &COOLDOWN),
         Err(Ok(ContractError::InvalidConfiguration))
     );
     // Rate and cooldown can still be tuned for the same tokens.

@@ -23,7 +23,12 @@ impl Fixture {
             .address();
         let contract_id = env.register(SolarGridContract, (&admin, &token));
         let client = SolarGridContractClient::new(&env, &contract_id);
-        Self { env, client, admin, token }
+        Self {
+            env,
+            client,
+            admin,
+            token,
+        }
     }
 
     pub fn id(&self, s: &str) -> String {
@@ -55,7 +60,12 @@ impl Fixture {
     }
 
     /// Register `meter_id`, mint `amount` to the owner and pay it in.
-    pub fn register_and_fund(&self, meter_id: &str, amount: i128, plan: PaymentPlan) -> (String, Address) {
+    pub fn register_and_fund(
+        &self,
+        meter_id: &str,
+        amount: i128,
+        plan: PaymentPlan,
+    ) -> (String, Address) {
         let (id, owner) = self.register(meter_id);
         self.mint(&owner, amount);
         self.client.make_payment(&id, &owner, &amount, &plan, &None);

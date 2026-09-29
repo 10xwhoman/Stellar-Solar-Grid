@@ -20,7 +20,11 @@ fn multisig(fx: &Fixture, threshold: u32) -> Vec<Address> {
 #[test]
 fn configure_multisig_validates_size_and_threshold() {
     let fx = Fixture::new();
-    let two = vec![&fx.env, Address::generate(&fx.env), Address::generate(&fx.env)];
+    let two = vec![
+        &fx.env,
+        Address::generate(&fx.env),
+        Address::generate(&fx.env),
+    ];
     assert_eq!(
         fx.client.try_configure_multisig(&two, &1),
         Err(Ok(ContractError::InvalidMultisigConfiguration))
@@ -48,19 +52,21 @@ fn proposal_requires_threshold_before_execution() {
     let fx = Fixture::new();
     fx.set_time(100);
     let admins = multisig(&fx, 2);
-    let id = fx
-        .client
-        .propose_admin_operation(&admins.get(0).unwrap(), &AdminOperation::Pause, &1_000);
+    let id =
+        fx.client
+            .propose_admin_operation(&admins.get(0).unwrap(), &AdminOperation::Pause, &1_000);
 
     assert_eq!(
         fx.client.try_execute_admin_operation(&id),
         Err(Ok(ContractError::ProposalNotReady))
     );
     assert_eq!(
-        fx.client.try_approve_admin_operation(&id, &admins.get(0).unwrap()),
+        fx.client
+            .try_approve_admin_operation(&id, &admins.get(0).unwrap()),
         Err(Ok(ContractError::ProposalAlreadyApproved))
     );
-    fx.client.approve_admin_operation(&id, &admins.get(1).unwrap());
+    fx.client
+        .approve_admin_operation(&id, &admins.get(1).unwrap());
     fx.client.execute_admin_operation(&id);
     assert!(fx.client.is_paused());
 
@@ -77,12 +83,13 @@ fn non_members_cannot_propose_or_approve() {
     let admins = multisig(&fx, 2);
     let outsider = Address::generate(&fx.env);
     assert_eq!(
-        fx.client.try_propose_admin_operation(&outsider, &AdminOperation::Pause, &1_000),
+        fx.client
+            .try_propose_admin_operation(&outsider, &AdminOperation::Pause, &1_000),
         Err(Ok(ContractError::Unauthorized))
     );
-    let id = fx
-        .client
-        .propose_admin_operation(&admins.get(0).unwrap(), &AdminOperation::Pause, &1_000);
+    let id =
+        fx.client
+            .propose_admin_operation(&admins.get(0).unwrap(), &AdminOperation::Pause, &1_000);
     assert_eq!(
         fx.client.try_approve_admin_operation(&id, &outsider),
         Err(Ok(ContractError::Unauthorized))
@@ -96,13 +103,17 @@ fn expired_proposals_are_rejected() {
     let admins = multisig(&fx, 2);
     let a0 = admins.get(0).unwrap();
     assert_eq!(
-        fx.client.try_propose_admin_operation(&a0, &AdminOperation::Pause, &500),
+        fx.client
+            .try_propose_admin_operation(&a0, &AdminOperation::Pause, &500),
         Err(Ok(ContractError::ProposalExpired))
     );
-    let id = fx.client.propose_admin_operation(&a0, &AdminOperation::Pause, &600);
+    let id = fx
+        .client
+        .propose_admin_operation(&a0, &AdminOperation::Pause, &600);
     fx.set_time(600);
     assert_eq!(
-        fx.client.try_approve_admin_operation(&id, &admins.get(1).unwrap()),
+        fx.client
+            .try_approve_admin_operation(&id, &admins.get(1).unwrap()),
         Err(Ok(ContractError::ProposalExpired))
     );
     assert_eq!(
@@ -140,7 +151,12 @@ fn executes_each_admin_operation_kind() {
     run(AdminOperation::RotateAdmin(new_admin.clone()));
     // The rotated admin is recorded on subsequent audited admin calls.
     fx.client.set_grace_period(&7);
-    let filter = AuditLogFilter { action_type: None, admin: Some(new_admin), from_ts: None, to_ts: None };
+    let filter = AuditLogFilter {
+        action_type: None,
+        admin: Some(new_admin),
+        from_ts: None,
+        to_ts: None,
+    };
     assert!(fx.client.get_audit_logs(&filter, &0, &10).len() >= 1);
 }
 
@@ -181,20 +197,28 @@ fn freeze_blocks_payments_until_oracle_cosigned_unfreeze() {
     fx.client.freeze_contract();
     assert!(fx.client.is_frozen());
     assert_eq!(
-        fx.client.try_make_payment(&meter, &owner, &100, &PaymentPlan::Daily, &None),
+        fx.client
+            .try_make_payment(&meter, &owner, &100, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::ContractFrozen))
     );
     fx.client.unfreeze_contract();
     assert!(!fx.client.is_frozen());
-    fx.client.make_payment(&meter, &owner, &100, &PaymentPlan::Daily, &None);
+    fx.client
+        .make_payment(&meter, &owner, &100, &PaymentPlan::Daily, &None);
 }
 
 #[test]
 fn unfreeze_requires_oracle_and_frozen_state() {
     let fx = Fixture::new();
-    assert_eq!(fx.client.try_unfreeze_contract(), Err(Ok(ContractError::ContractNotFrozen)));
+    assert_eq!(
+        fx.client.try_unfreeze_contract(),
+        Err(Ok(ContractError::ContractNotFrozen))
+    );
     fx.client.freeze_contract();
-    assert_eq!(fx.client.try_unfreeze_contract(), Err(Ok(ContractError::OracleNotSet)));
+    assert_eq!(
+        fx.client.try_unfreeze_contract(),
+        Err(Ok(ContractError::OracleNotSet))
+    );
 }
 
 #[test]
@@ -220,11 +244,21 @@ fn audit_log_pagination_is_capped_and_filters_by_time() {
         fx.client.set_grace_period(&i);
     }
     assert_eq!(fx.client.get_audit_log_count(), 5);
-    let all = AuditLogFilter { action_type: None, admin: None, from_ts: None, to_ts: None };
+    let all = AuditLogFilter {
+        action_type: None,
+        admin: None,
+        from_ts: None,
+        to_ts: None,
+    };
     assert_eq!(fx.client.get_audit_logs(&all, &0, &1_000).len(), 5);
     assert_eq!(fx.client.get_audit_logs(&all, &3, &10).len(), 2);
 
-    let window = AuditLogFilter { action_type: None, admin: None, from_ts: Some(2_000), to_ts: Some(4_000) };
+    let window = AuditLogFilter {
+        action_type: None,
+        admin: None,
+        from_ts: Some(2_000),
+        to_ts: Some(4_000),
+    };
     assert_eq!(fx.client.get_audit_logs(&window, &0, &10).len(), 3);
     let by_action = AuditLogFilter {
         action_type: Some(String::from_str(&fx.env, "set_grace_period")),

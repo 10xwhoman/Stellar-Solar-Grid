@@ -23,7 +23,8 @@ fn register_with_metadata_round_trips() {
     fx.client.allowlist_add(&owner);
     let meter = fx.id("MD1");
     let md = metadata(&fx, &[("site", "Lagos"), ("panel", "400W")]);
-    fx.client.register_meter_with_metadata(&meter, &owner, &Some(md.clone()));
+    fx.client
+        .register_meter_with_metadata(&meter, &owner, &Some(md.clone()));
     assert_eq!(fx.client.get_meter_metadata(&meter), md);
 
     let updated = metadata(&fx, &[("site", "Abuja")]);
@@ -67,10 +68,22 @@ fn deregister_removes_meter_from_every_index() {
 
     fx.client.deregister_meter(&m1);
     assert_eq!(fx.client.get_meter_count(), 1);
-    assert_eq!(fx.client.get_meters_by_owner(&owner), vec![&fx.env, m2.clone()]);
-    assert_eq!(fx.client.get_all_meters_paginated(&0, &10), vec![&fx.env, m2]);
-    assert_eq!(fx.client.try_get_meter(&m1).err(), Some(Ok(ContractError::MeterNotFound)));
-    assert_eq!(fx.client.try_deregister_meter(&m1), Err(Ok(ContractError::MeterNotFound)));
+    assert_eq!(
+        fx.client.get_meters_by_owner(&owner),
+        vec![&fx.env, m2.clone()]
+    );
+    assert_eq!(
+        fx.client.get_all_meters_paginated(&0, &10),
+        vec![&fx.env, m2]
+    );
+    assert_eq!(
+        fx.client.try_get_meter(&m1).err(),
+        Some(Ok(ContractError::MeterNotFound))
+    );
+    assert_eq!(
+        fx.client.try_deregister_meter(&m1),
+        Err(Ok(ContractError::MeterNotFound))
+    );
 }
 
 #[test]
@@ -107,7 +120,8 @@ fn topping_up_clears_grace_period() {
     assert!(fx.client.check_access_status(&meter).in_grace_period);
 
     fx.mint(&owner, 50);
-    fx.client.make_payment(&meter, &owner, &50, &PaymentPlan::UsageBased, &None);
+    fx.client
+        .make_payment(&meter, &owner, &50, &PaymentPlan::UsageBased, &None);
     let status = fx.client.check_access_status(&meter);
     assert!(status.has_access);
     assert!(!status.in_grace_period);
@@ -123,7 +137,8 @@ fn meter_full_view_and_emergency_contact() {
 
     assert_eq!(fx.client.get_emergency_contact(&meter), None);
     let contact = Address::generate(&fx.env);
-    fx.client.set_emergency_contact(&meter, &Some(contact.clone()));
+    fx.client
+        .set_emergency_contact(&meter, &Some(contact.clone()));
     assert_eq!(fx.client.get_emergency_contact(&meter), Some(contact));
     fx.client.set_emergency_contact(&meter, &None);
     assert_eq!(fx.client.get_emergency_contact(&meter), None);
@@ -151,9 +166,9 @@ fn batch_deactivate_reports_per_meter_outcome() {
     let (inactive, _) = fx.register("BD_I");
     let missing = fx.id("BD_X");
 
-    let summary = fx
-        .client
-        .batch_deactivate_meters(&vec![&fx.env, active.clone(), inactive, missing]);
+    let summary =
+        fx.client
+            .batch_deactivate_meters(&vec![&fx.env, active.clone(), inactive, missing]);
     assert_eq!(summary.total, 3);
     assert_eq!(summary.deactivated, 1);
     assert_eq!(summary.skipped, 2);
@@ -208,14 +223,21 @@ fn ownership_transfer_updates_indexes_and_history() {
 
     assert_eq!(fx.client.get_meter(&meter).owner, new_owner);
     assert_eq!(fx.client.get_meters_by_owner(&old_owner).len(), 0);
-    assert_eq!(fx.client.get_meters_by_owner(&new_owner), vec![&fx.env, meter.clone()]);
+    assert_eq!(
+        fx.client.get_meters_by_owner(&new_owner),
+        vec![&fx.env, meter.clone()]
+    );
     // The prepaid balance travels with the meter.
     assert_eq!(fx.client.get_meter_balance(&meter), 500);
 }
 
 // ── Schema migration ─────────────────────────────────────────────────────────
 
-fn write_raw<V: soroban_sdk::IntoVal<soroban_sdk::Env, soroban_sdk::Val>>(fx: &Fixture, meter: &String, value: &V) {
+fn write_raw<V: soroban_sdk::IntoVal<soroban_sdk::Env, soroban_sdk::Val>>(
+    fx: &Fixture,
+    meter: &String,
+    value: &V,
+) {
     fx.env.as_contract(&fx.client.address, || {
         fx.env
             .storage()
@@ -229,18 +251,25 @@ fn legacy_v1_meter_is_migrated_on_read() {
     let fx = Fixture::new();
     let meter = fx.id("V1");
     let owner = Address::generate(&fx.env);
-    write_raw(&fx, &meter, &LegacyMeterV1 {
-        version: 1,
-        owner: owner.clone(),
-        active: true,
-        units_used: 9,
-        plan: PaymentPlan::Weekly,
-        last_payment: 77,
-        expires_at: 999,
-    });
+    write_raw(
+        &fx,
+        &meter,
+        &LegacyMeterV1 {
+            version: 1,
+            owner: owner.clone(),
+            active: true,
+            units_used: 9,
+            plan: PaymentPlan::Weekly,
+            last_payment: 77,
+            expires_at: 999,
+        },
+    );
     fx.client.migrate_meter_to_v2(&meter);
     let m = fx.client.get_meter(&meter);
-    assert_eq!((m.version, m.owner, m.units_used, m.expires_at), (6, owner, 9, 999));
+    assert_eq!(
+        (m.version, m.owner, m.units_used, m.expires_at),
+        (6, owner, 9, 999)
+    );
     assert_eq!(m.installed_at, 77);
     assert_eq!(m.daily_limit, 0);
 }
@@ -249,19 +278,23 @@ fn legacy_v1_meter_is_migrated_on_read() {
 fn legacy_v2_meter_keeps_daily_limit() {
     let fx = Fixture::new();
     let meter = fx.id("V2");
-    write_raw(&fx, &meter, &LegacyMeterV2 {
-        version: 2,
-        owner: Address::generate(&fx.env),
-        active: false,
-        units_used: 0,
-        plan: PaymentPlan::Daily,
-        last_payment: 5,
-        expires_at: 5,
-        daily_limit: 321,
-        day_spent: 12,
-        day_start: 5,
-        grace_expires_at: None,
-    });
+    write_raw(
+        &fx,
+        &meter,
+        &LegacyMeterV2 {
+            version: 2,
+            owner: Address::generate(&fx.env),
+            active: false,
+            units_used: 0,
+            plan: PaymentPlan::Daily,
+            last_payment: 5,
+            expires_at: 5,
+            daily_limit: 321,
+            day_spent: 12,
+            day_start: 5,
+            grace_expires_at: None,
+        },
+    );
     fx.client.migrate_meter_to_v3(&meter);
     let m = fx.client.get_meter(&meter);
     assert_eq!((m.version, m.daily_limit, m.day_spent), (6, 321, 12));
@@ -273,21 +306,25 @@ fn legacy_v5_meter_gets_installation_date() {
     let fx = Fixture::new();
     let meter = fx.id("V5");
     let contact = Address::generate(&fx.env);
-    write_raw(&fx, &meter, &LegacyMeterV5 {
-        version: 5,
-        owner: Address::generate(&fx.env),
-        active: true,
-        units_used: 1,
-        plan: PaymentPlan::Monthly,
-        last_payment: 4_242,
-        expires_at: 9_000,
-        daily_limit: 0,
-        day_spent: 0,
-        day_start: 0,
-        grace_expires_at: None,
-        emergency_contact: Some(contact.clone()),
-        auto_deactivate: false,
-    });
+    write_raw(
+        &fx,
+        &meter,
+        &LegacyMeterV5 {
+            version: 5,
+            owner: Address::generate(&fx.env),
+            active: true,
+            units_used: 1,
+            plan: PaymentPlan::Monthly,
+            last_payment: 4_242,
+            expires_at: 9_000,
+            daily_limit: 0,
+            day_spent: 0,
+            day_start: 0,
+            grace_expires_at: None,
+            emergency_contact: Some(contact.clone()),
+            auto_deactivate: false,
+        },
+    );
     fx.client.migrate_meter_v5(&meter);
     let m = fx.client.get_meter(&meter);
     assert_eq!(m.version, 6);
@@ -300,15 +337,19 @@ fn legacy_v5_meter_gets_installation_date() {
 fn legacy_v0_meter_migrates_through_any_read_path() {
     let fx = Fixture::new();
     let meter = fx.id("V0");
-    write_raw(&fx, &meter, &LegacyMeter {
-        owner: Address::generate(&fx.env),
-        active: true,
-        balance: 50,
-        units_used: 3,
-        plan: PaymentPlan::UsageBased,
-        last_payment: 10,
-        expires_at: u64::MAX,
-    });
+    write_raw(
+        &fx,
+        &meter,
+        &LegacyMeter {
+            owner: Address::generate(&fx.env),
+            active: true,
+            balance: 50,
+            units_used: 3,
+            plan: PaymentPlan::UsageBased,
+            last_payment: 10,
+            expires_at: u64::MAX,
+        },
+    );
     // A plain read migrates and persists the entry.
     assert!(fx.client.check_access_status(&meter).has_access == false);
     assert_eq!(fx.client.get_meter(&meter).version, 6);
@@ -321,6 +362,12 @@ fn legacy_v0_meter_migrates_through_any_read_path() {
 fn migrate_unknown_meter_returns_not_found() {
     let fx = Fixture::new();
     let meter = fx.id("NONE");
-    assert_eq!(fx.client.try_migrate_meter(&meter), Err(Ok(ContractError::MeterNotFound)));
-    assert_eq!(fx.client.try_migrate_meter_v5(&meter), Err(Ok(ContractError::MeterNotFound)));
+    assert_eq!(
+        fx.client.try_migrate_meter(&meter),
+        Err(Ok(ContractError::MeterNotFound))
+    );
+    assert_eq!(
+        fx.client.try_migrate_meter_v5(&meter),
+        Err(Ok(ContractError::MeterNotFound))
+    );
 }

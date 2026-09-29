@@ -16,11 +16,15 @@ fn delegate_can_pay_until_removed() {
     fx.mint(&delegate, 1_000);
 
     assert_eq!(
-        fx.client.try_make_delegated_payment(&meter, &delegate, &100, &PaymentPlan::Daily, &None),
+        fx.client
+            .try_make_delegated_payment(&meter, &delegate, &100, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::Unauthorized))
     );
     fx.client.add_delegate(&meter, &delegate);
-    assert_eq!(fx.client.get_delegates(&meter), vec![&fx.env, delegate.clone()]);
+    assert_eq!(
+        fx.client.get_delegates(&meter),
+        vec![&fx.env, delegate.clone()]
+    );
 
     fx.client
         .make_delegated_payment(&meter, &delegate, &300, &PaymentPlan::Daily, &None);
@@ -32,7 +36,8 @@ fn delegate_can_pay_until_removed() {
     fx.client.remove_delegate(&meter, &delegate);
     assert_eq!(fx.client.get_delegates(&meter).len(), 0);
     assert_eq!(
-        fx.client.try_make_delegated_payment(&meter, &delegate, &100, &PaymentPlan::Daily, &None),
+        fx.client
+            .try_make_delegated_payment(&meter, &delegate, &100, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::Unauthorized))
     );
 }
@@ -44,12 +49,14 @@ fn delegated_payment_validates_amount_and_pause() {
     let delegate = Address::generate(&fx.env);
     fx.client.add_delegate(&meter, &delegate);
     assert_eq!(
-        fx.client.try_make_delegated_payment(&meter, &delegate, &0, &PaymentPlan::Daily, &None),
+        fx.client
+            .try_make_delegated_payment(&meter, &delegate, &0, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::InvalidAmount))
     );
     fx.client.pause();
     assert_eq!(
-        fx.client.try_make_delegated_payment(&meter, &delegate, &1, &PaymentPlan::Daily, &None),
+        fx.client
+            .try_make_delegated_payment(&meter, &delegate, &1, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::ContractPaused))
     );
 }
@@ -75,7 +82,8 @@ fn auto_topup_pulls_allowance_below_threshold() {
 
     fx.mint(&owner, 5_000);
     let expiry = fx.env.ledger().sequence() + 1_000;
-    fx.token_client().approve(&owner, &fx.client.address, &5_000, &expiry);
+    fx.token_client()
+        .approve(&owner, &fx.client.address, &5_000, &expiry);
 
     assert!(fx.client.trigger_auto_topup(&meter));
     assert_eq!(fx.client.get_meter_balance(&meter), 1_100);
@@ -100,7 +108,8 @@ fn group_batch_payment_splits_amount_with_remainder() {
     let group = fx.id("HOME");
     fx.client.create_meter_group(&group, &fx.id("Home"), &owner);
     assert_eq!(
-        fx.client.try_create_meter_group(&group, &fx.id("Dup"), &owner),
+        fx.client
+            .try_create_meter_group(&group, &fx.id("Dup"), &owner),
         Err(Ok(ContractError::MeterGroupAlreadyExists))
     );
     for m in [&m1, &m2, &m3] {
@@ -119,7 +128,10 @@ fn group_batch_payment_splits_amount_with_remainder() {
     assert_eq!(fx.client.get_meter_balance(&m3), 33);
 
     let stats = fx.client.get_group_stats(&group);
-    assert_eq!((stats.meter_count, stats.active_count, stats.total_balance), (3, 3, 100));
+    assert_eq!(
+        (stats.meter_count, stats.active_count, stats.total_balance),
+        (3, 3, 100)
+    );
 
     fx.client.remove_meter_from_group(&group, &m3);
     assert_eq!(fx.client.get_group_stats(&group).meter_count, 2);
@@ -142,7 +154,8 @@ fn groups_only_accept_the_owners_meters() {
         Err(Ok(ContractError::MeterGroupNotFound))
     );
     assert_eq!(
-        fx.client.try_batch_pay_group(&group, &owner, &10, &PaymentPlan::Daily, &None),
+        fx.client
+            .try_batch_pay_group(&group, &owner, &10, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::InvalidAmount)),
         "empty groups cannot be paid"
     );
@@ -159,7 +172,8 @@ fn referral_credit_accrues_on_referred_payments() {
     fx.client.set_referrer(&payer, &referrer);
 
     fx.mint(&payer, 1_000);
-    fx.client.make_payment(&meter, &payer, &1_000, &PaymentPlan::Daily, &None);
+    fx.client
+        .make_payment(&meter, &payer, &1_000, &PaymentPlan::Daily, &None);
     assert_eq!(fx.client.get_referral_credit(&referrer), 100);
     let stats = fx.client.get_referral_stats(&referrer);
     assert_eq!((stats.referred_count, stats.total_credits), (1, 100));
@@ -174,9 +188,15 @@ fn referral_rules_are_enforced() {
         fx.client.try_set_referral_bonus_percent(&101),
         Err(Ok(ContractError::InvalidReferral))
     );
-    assert_eq!(fx.client.try_set_referrer(&a, &a), Err(Ok(ContractError::InvalidReferral)));
+    assert_eq!(
+        fx.client.try_set_referrer(&a, &a),
+        Err(Ok(ContractError::InvalidReferral))
+    );
     fx.client.set_referrer(&a, &b);
-    assert_eq!(fx.client.try_set_referrer(&a, &b), Err(Ok(ContractError::InvalidReferral)));
+    assert_eq!(
+        fx.client.try_set_referrer(&a, &b),
+        Err(Ok(ContractError::InvalidReferral))
+    );
 }
 
 // ── Time-of-use pricing ──────────────────────────────────────────────────────
@@ -184,7 +204,11 @@ fn referral_rules_are_enforced() {
 const DAY: u64 = 86_400;
 
 fn window(start: u32, end: u32, rate: i128) -> PricingWindow {
-    PricingWindow { start_minute: start, end_minute: end, rate }
+    PricingWindow {
+        start_minute: start,
+        end_minute: end,
+        rate,
+    }
 }
 
 #[test]
@@ -219,13 +243,19 @@ fn invalid_pricing_windows_are_rejected() {
         vec![&fx.env, window(0, 100, 1), window(50, 200, 1)],
     ];
     for weekday in cases {
-        let schedule = PricingSchedule { weekday, weekend: vec![&fx.env] };
+        let schedule = PricingSchedule {
+            weekday,
+            weekend: vec![&fx.env],
+        };
         assert_eq!(
             fx.client.try_set_pricing_schedule(&schedule),
             Err(Ok(ContractError::InvalidConfiguration))
         );
     }
-    assert_eq!(fx.client.try_set_unit_price(&0), Err(Ok(ContractError::InvalidConfiguration)));
+    assert_eq!(
+        fx.client.try_set_unit_price(&0),
+        Err(Ok(ContractError::InvalidConfiguration))
+    );
 }
 
 // ── Revenue sharing ──────────────────────────────────────────────────────────
@@ -239,7 +269,8 @@ fn distribute_and_transfer_pays_collaborators_by_share() {
     fx.client.add_collaborator(&a, &6_000);
     fx.client.add_collaborator(&b, &2_500);
     assert_eq!(
-        fx.client.try_add_collaborator(&Address::generate(&fx.env), &2_000),
+        fx.client
+            .try_add_collaborator(&Address::generate(&fx.env), &2_000),
         Err(Ok(ContractError::InvalidAmount)),
         "total shares cannot exceed 100%"
     );
@@ -252,7 +283,10 @@ fn distribute_and_transfer_pays_collaborators_by_share() {
 
     let summary = fx.client.get_revenue_summary();
     assert!(summary.len() >= 2);
-    assert_eq!(fx.client.try_distribute_and_transfer(&0), Err(Ok(ContractError::InvalidAmount)));
+    assert_eq!(
+        fx.client.try_distribute_and_transfer(&0),
+        Err(Ok(ContractError::InvalidAmount))
+    );
 }
 
 #[test]
@@ -293,9 +327,15 @@ fn asset_rate_updates_apply_to_new_payments() {
     token::StellarAssetClient::new(&fx.env, &usdc).mint(&payer, &1_000);
 
     fx.client.add_supported_asset(&usdc, &RATE_SCALE);
-    assert_eq!(fx.client.make_asset_payment(&meter, &payer, &usdc, &100), 100);
+    assert_eq!(
+        fx.client.make_asset_payment(&meter, &payer, &usdc, &100),
+        100
+    );
     fx.client.set_asset_rate(&usdc, &(RATE_SCALE * 3));
-    assert_eq!(fx.client.make_asset_payment(&meter, &payer, &usdc, &100), 300);
+    assert_eq!(
+        fx.client.make_asset_payment(&meter, &payer, &usdc, &100),
+        300
+    );
     assert_eq!(fx.client.get_asset_payment_balance(&meter), 400);
     assert_eq!(
         fx.client.try_set_asset_rate(&usdc, &0),
