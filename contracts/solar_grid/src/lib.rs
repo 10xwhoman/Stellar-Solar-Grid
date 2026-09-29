@@ -7,11 +7,13 @@ use soroban_sdk::{
     Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
+mod certificates;
 mod multi_asset;
 mod staking;
 mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
+pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
 pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 
@@ -80,6 +82,14 @@ pub enum ContractError {
     PaymentDurationTooLarge = 43,
     /// `now + duration` would overflow the u64 ledger timestamp (#745).
     TimestampOverflow = 44,
+    /// No export certificate exists with the given id (Issue #871).
+    CertificateNotFound = 50,
+    /// Certificate period is empty or ends in the future (Issue #871).
+    InvalidCertificatePeriod = 51,
+    /// Certificate period overlaps energy already certified for the meter.
+    CertificatePeriodOverlap = 52,
+    /// The certificate has been retired and can no longer change hands.
+    CertificateRetired = 53,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────

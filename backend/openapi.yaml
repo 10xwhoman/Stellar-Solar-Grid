@@ -48,6 +48,25 @@ components:
         code:
           type: string
 
+    ExportCertificate:
+      type: object
+      description: Renewable energy export certificate (#871)
+      required: [id, meterId, producer, owner, energyWh, energyKwh, periodStart, periodEnd, issuedAt, issuer, readingHash, retiredAt, status]
+      properties:
+        id: { type: string }
+        meterId: { type: string }
+        producer: { type: string, description: Meter owner at issuance }
+        owner: { type: string, description: Current holder }
+        energyWh: { type: string, description: Exported watt-hours (decimal string) }
+        energyKwh: { type: number }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        issuer: { type: string }
+        readingHash: { type: string, description: SHA-256 hex of the canonical reading payload }
+        retiredAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, retired] }
+
     TxHash:
       type: object
       required: [hash]
