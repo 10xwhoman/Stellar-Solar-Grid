@@ -94,7 +94,7 @@ fn warranty_validation_and_expiry_query() {
     client.update_meter_metadata(&m2, &later);
 
     assert_eq!(client.get_warranty_expiry(&m1), Some(5000));
-    let expiring = client.get_meters_with_expiring_warranty(&10_000);
+    let expiring = client.get_meters_expiring_warranty(&10_000);
     assert_eq!(expiring.len(), 1);
     assert_eq!(expiring.get(0).unwrap(), m1);
 }
