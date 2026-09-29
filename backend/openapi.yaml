@@ -40,6 +40,41 @@ components:
         code:
           type: string
 
+    MultisigWallet:
+      type: object
+      description: Organizational N-of-M wallet (#872)
+      properties:
+        address: { type: string }
+        name: { type: string }
+        threshold: { type: integer }
+        signers:
+          type: array
+          items:
+            type: object
+            properties:
+              publicKey: { type: string }
+              label: { type: string, nullable: true }
+              notifications: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    MultisigProposal:
+      type: object
+      properties:
+        id: { type: string }
+        wallet: { type: string }
+        contractId: { type: string }
+        function: { type: string }
+        description: { type: string }
+        preimageXdr: { type: string, description: HashIdPreimage XDR for SEP-43 signAuthEntry }
+        payloadHex: { type: string, description: SHA-256 of the preimage; the bytes each signer signs }
+        expirationLedger: { type: integer }
+        threshold: { type: integer }
+        status: { type: string, enum: [pending, ready, submitted, failed, expired] }
+        signedBy: { type: array, items: { type: string } }
+        pendingSigners: { type: array, items: { type: string } }
+        txHash: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+
     TxHash:
       type: object
       required: [hash]
@@ -1548,3 +1583,194 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Multi-signature wallets (#872) ────────────────────────────────────────────
+
+  /api/multisig/wallets:
+    post:
+      summary: Register a deployed multisig wallet contract (admin only)
+      description: |
+        The signer set and threshold are read from the wallet contract. The
+        request only adds display labels and notification emails; every key
+        supplied must be an on-chain signer. Emails are never returned.
+      operationId: registerMultisigWallet
+      tags: [multisig]
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address, name]
+              properties:
+                address: { type: string, description: Wallet contract address (C...) }
+                name: { type: string }
+                signers:
+                  type: array
+                  items:
+                    type: object
+                    required: [publicKey]
+                    properties:
+                      publicKey: { type: string, description: Signer account (G...) }
+                      email: { type: string, format: email }
+                      label: { type: string }
+      responses:
+        "201":
+          description: Registered wallet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wallet: { $ref: "#/components/schemas/MultisigWallet" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/multisig/wallets/{address}:
+    get:
+      summary: Get a registered multisig wallet
+      operationId: getMultisigWallet
+      tags: [multisig]
+      parameters:
+        - { name: address, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Wallet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wallet: { $ref: "#/components/schemas/MultisigWallet" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/multisig/wallets/{address}/proposals:
+    get:
+      summary: List a wallet's proposals
+      operationId: listMultisigProposals
+      tags: [multisig]
+      parameters:
+        - { name: address, in: path, required: true, schema: { type: string } }
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, ready, submitted, failed, expired] }
+      responses:
+        "200":
+          description: Proposals, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposals:
+                    type: array
+                    items: { $ref: "#/components/schemas/MultisigProposal" }
+    post:
+      summary: Propose a SolarGrid action that needs the wallet's authorization
+      description: |
+        Simulates the call, fixes the authorization entry's expiration and
+        returns the payload each signer must sign (SEP-43 signAuthEntry on
+        preimageXdr). Signers with an email address are notified.
+      operationId: createMultisigProposal
+      tags: [multisig]
+      parameters:
+        - { name: address, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, params]
+              properties:
+                action:
+                  type: string
+                  enum: [make_payment, transfer_meter, set_emergency_contact, add_delegate, remove_delegate]
+                params:
+                  type: object
+                  description: |
+                    make_payment {meterId, amount (stroops), plan, memo?};
+                    transfer_meter {meterId, newOwner}; set_emergency_contact
+                    {meterId, contact or null}; add_delegate / remove_delegate
+                    {meterId, delegate}
+                proposer: { type: string, description: Optional signer account proposing }
+      responses:
+        "201":
+          description: Proposal created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal: { $ref: "#/components/schemas/MultisigProposal" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/multisig/proposals/{id}:
+    get:
+      summary: Get a proposal
+      operationId: getMultisigProposal
+      tags: [multisig]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal: { $ref: "#/components/schemas/MultisigProposal" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/multisig/proposals/{id}/signatures:
+    post:
+      summary: Add a signer's signature
+      description: The signature is verified against the payload and the wallet's signer set before it is stored.
+      operationId: signMultisigProposal
+      tags: [multisig]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [publicKey, signature]
+              properties:
+                publicKey: { type: string, description: Signer account (G...) }
+                signature: { type: string, description: 64-byte ed25519 signature, hex or base64 }
+      responses:
+        "200":
+          description: Updated proposal (status becomes ready at the threshold)
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          description: Key is not a signer of the wallet
+        "409":
+          description: Already signed, expired or closed
+
+  /api/multisig/proposals/{id}/submit:
+    post:
+      summary: Submit a proposal that reached its threshold
+      operationId: submitMultisigProposal
+      tags: [multisig]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Submitted; txHash is set
+        "409":
+          description: Not ready or expired
+        "502":
+          description: The network rejected the transaction; error is set

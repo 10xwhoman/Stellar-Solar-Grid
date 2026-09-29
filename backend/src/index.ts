@@ -14,10 +14,12 @@ import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
 import * as OpenApiValidator from "express-openapi-validator";
 
-import { stellarService, server } from "./lib/stellar.js";
+import { stellarService, server, NETWORK_PASSPHRASE } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { receiptsRouter } from "./routes/receipts.js";
+import { createMultisigRouter } from "./routes/multisig.js";
+import { createStellarMultisigChain } from "./lib/multisig.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { auditRouter } from "./routes/audit.js";
@@ -159,6 +161,18 @@ startHealthMonitor();
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/export", exportRouter);
+app.use(
+  "/api/multisig",
+  writeLimiter,
+  createMultisigRouter(
+    createStellarMultisigChain({
+      server,
+      relayer: stellarService.adminKeypair,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    }),
+    stellarService.contractId,
+  ),
+);
 app.use("/api/delegates", writeLimiter, delegatesRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
