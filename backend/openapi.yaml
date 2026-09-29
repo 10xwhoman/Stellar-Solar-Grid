@@ -31,6 +31,14 @@ components:
   schemas:
     # ── Common ────────────────────────────────────────────────────────────────
 
+    EnergyForecastModel:
+      type: [object, "null"]
+      properties:
+        algorithm: { type: string, example: seasonal-ridge }
+        trainingSamples: { type: integer }
+        accuracyPct: { type: [number, "null"], minimum: 0, maximum: 100 }
+        trainedAt: { type: string, format: date-time }
+
     Error:
       type: object
       required: [error]
@@ -1568,157 +1576,77 @@ paths:
                         name: { type: string }
                         peakSunHours: { type: number }
 
-  # ── Energy export certificates (#871) ─────────────────────────────────────────
-
-  /api/certificates:
+  /api/weather/energy-forecast:
     get:
-      summary: List export certificates held by an account
-      operationId: listExportCertificates
-      tags: [certificates]
-      parameters:
-        - name: owner
-          in: query
-          required: true
-          schema: { type: string }
-          description: Stellar account (G...) or contract (C...) address
-        - name: offset
-          in: query
-          schema: { type: integer, minimum: 0, default: 0 }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
-      responses:
-        "200":
-          description: Certificates held by the owner, oldest first
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [owner, offset, limit, certificates]
-                properties:
-                  owner: { type: string }
-                  offset: { type: integer }
-                  limit: { type: integer }
-                  certificates:
-                    type: array
-                    items: { $ref: "#/components/schemas/ExportCertificate" }
-        "400":
-          $ref: "#/components/responses/ValidationError"
-    post:
-      summary: Mint an export certificate (admin only)
+      summary: Forecast hourly energy production and consumption
       description: |
-        The backend signs as the contract admin (an accepted certificate
-        issuer). The response's `readingHash` is the SHA-256 of the canonical
-        JSON of the request body (keys sorted) and is stored on-chain.
-      operationId: mintExportCertificate
-      tags: [certificates]
-      security:
-        - AdminKey: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [meterId, energyWh, periodStart, periodEnd]
-              properties:
-                meterId: { type: string }
-                energyWh: { type: integer, minimum: 1, description: Exported energy in watt-hours }
-                periodStart: { type: integer, description: Unix seconds, inclusive }
-                periodEnd: { type: integer, description: Unix seconds, exclusive; not in the future }
-                readings: { description: Optional raw interval readings committed to by the hash }
-      responses:
-        "201":
-          description: Mint transaction submitted and confirmed
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [hash, readingHash]
-                properties:
-                  hash: { type: string, description: Stellar transaction hash }
-                  readingHash: { type: string, description: SHA-256 hex committed on-chain }
-        "400":
-          $ref: "#/components/responses/ValidationError"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  /api/certificates/{id}:
-    get:
-      summary: Get an export certificate
-      operationId: getExportCertificate
-      tags: [certificates]
+        Returns up to 48 hourly forecasts using a seasonal regression trained
+        on the preceding 90 days of meter usage and/or registered solar-panel
+        telemetry. OpenWeather hourly conditions are used to adjust estimates.
+        Accuracy is measured on held-out history and is null when unavailable.
+      operationId: getHourlyEnergyForecast
+      tags: [weather]
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: string, pattern: "^[1-9][0-9]*$" }
+        - name: meterId
+          in: query
+          description: Meter whose historical milli-kWh usage should be forecast.
+          schema: { type: string, maxLength: 64 }
+        - name: deviceId
+          in: query
+          description: Registered solar_panel device whose production should be forecast.
+          schema: { type: string, maxLength: 100 }
+        - name: lat
+          in: query
+          description: Latitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -90, maximum: 90 }
+        - name: lon
+          in: query
+          description: Longitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -180, maximum: 180 }
+        - name: hours
+          in: query
+          description: Forecast horizon in whole hours (default 48).
+          schema: { type: integer, minimum: 1, maximum: 48, default: 48 }
       responses:
         "200":
-          description: Certificate metadata and on-chain verification details
+          description: Hourly forecast and per-model holdout accuracy.
           content:
             application/json:
               schema:
                 type: object
-                required: [certificate, verification]
+                required: [horizonHours, generatedAt, location, weatherStale, models, forecast]
                 properties:
-                  certificate: { $ref: "#/components/schemas/ExportCertificate" }
-                  verification:
+                  meterId: { type: [string, "null"] }
+                  deviceId: { type: [string, "null"] }
+                  horizonHours: { type: integer, minimum: 1, maximum: 48 }
+                  generatedAt: { type: string, format: date-time }
+                  weatherStale: { type: boolean }
+                  models:
                     type: object
                     properties:
-                      contractId: { type: string }
-                      network: { type: string }
-                      verifyUrl: { type: string }
+                      production: { $ref: "#/components/schemas/EnergyForecastModel" }
+                      consumption: { $ref: "#/components/schemas/EnergyForecastModel" }
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      required: [timestamp, productionKwh, consumptionKwh, weather]
+                      properties:
+                        timestamp: { type: string, format: date-time }
+                        productionKwh: { type: [number, "null"] }
+                        consumptionKwh: { type: [number, "null"] }
+                        weather:
+                          type: object
+                          properties:
+                            temperatureC: { type: number }
+                            cloudCoverPct: { type: number }
+                            precipitationProbability: { type: number }
+                            condition: { type: string }
+                            productionFactor: { type: number }
+                            consumptionTemperatureFactor: { type: number }
         "400":
           $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
-
-  /api/certificates/{id}/pdf:
-    get:
-      summary: Download an export certificate as PDF
-      operationId: downloadExportCertificatePdf
-      tags: [certificates]
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: string, pattern: "^[1-9][0-9]*$" }
-      responses:
-        "200":
-          description: PDF certificate
-          content:
-            application/pdf:
-              schema: { type: string, format: binary }
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  /api/certificates/{id}/verify:
-    get:
-      summary: Verify a certificate against its reading hash on-chain
-      operationId: verifyExportCertificate
-      tags: [certificates]
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: string, pattern: "^[1-9][0-9]*$" }
-        - name: readingHash
-          in: query
-          required: true
-          schema: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
-      responses:
-        "200":
-          description: Result of verify_export_certificate
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [id, readingHash, valid, contractId]
-                properties:
-                  id: { type: string }
-                  readingHash: { type: string }
-                  valid: { type: boolean }
-                  contractId: { type: string }
-        "400":
-          $ref: "#/components/responses/ValidationError"
+        "502":
+          description: Weather provider did not return a usable 48-hour forecast.
