@@ -32,6 +32,10 @@ import { metricsRouter } from "./routes/metrics.js";
 import { providerRouter } from "./routes/provider.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { loadBalancingRouter } from "./routes/loadBalancing.js";
+import { twoFactorRouter } from "./routes/twoFactor.js";
+import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { weatherRouter } from "./routes/weather.js";
@@ -262,6 +266,19 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
 });
 
+const httpServer = app.listen(PORT, () => {
+  logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
+  initUsageEventStore();
+  startUsageEventRetryWorker();
+  logger.info("SolarGrid backend listening", { port: PORT });
+  startLimitWatcher(stellarService);
+  try {
+    startIoTBridge();
+  } catch (err) {
+    logger.error("Failed to start IoT bridge", { err });
+  }
+});
+attachTradingWebSocket(httpServer);
 const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => {
   console.log(`Backend listening on port ${port}`);
