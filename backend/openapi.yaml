@@ -40,6 +40,25 @@ components:
         code:
           type: string
 
+    ExportCertificate:
+      type: object
+      description: Renewable energy export certificate (#871)
+      required: [id, meterId, producer, owner, energyWh, energyKwh, periodStart, periodEnd, issuedAt, issuer, readingHash, retiredAt, status]
+      properties:
+        id: { type: string }
+        meterId: { type: string }
+        producer: { type: string, description: Meter owner at issuance }
+        owner: { type: string, description: Current holder }
+        energyWh: { type: string, description: Exported watt-hours (decimal string) }
+        energyKwh: { type: number }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        issuer: { type: string }
+        readingHash: { type: string, description: SHA-256 hex of the canonical reading payload }
+        retiredAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, retired] }
+
     TxHash:
       type: object
       required: [hash]
@@ -1548,3 +1567,158 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Energy export certificates (#871) ─────────────────────────────────────────
+
+  /api/certificates:
+    get:
+      summary: List export certificates held by an account
+      operationId: listExportCertificates
+      tags: [certificates]
+      parameters:
+        - name: owner
+          in: query
+          required: true
+          schema: { type: string }
+          description: Stellar account (G...) or contract (C...) address
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Certificates held by the owner, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [owner, offset, limit, certificates]
+                properties:
+                  owner: { type: string }
+                  offset: { type: integer }
+                  limit: { type: integer }
+                  certificates:
+                    type: array
+                    items: { $ref: "#/components/schemas/ExportCertificate" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      summary: Mint an export certificate (admin only)
+      description: |
+        The backend signs as the contract admin (an accepted certificate
+        issuer). The response's `readingHash` is the SHA-256 of the canonical
+        JSON of the request body (keys sorted) and is stored on-chain.
+      operationId: mintExportCertificate
+      tags: [certificates]
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, energyWh, periodStart, periodEnd]
+              properties:
+                meterId: { type: string }
+                energyWh: { type: integer, minimum: 1, description: Exported energy in watt-hours }
+                periodStart: { type: integer, description: Unix seconds, inclusive }
+                periodEnd: { type: integer, description: Unix seconds, exclusive; not in the future }
+                readings: { description: Optional raw interval readings committed to by the hash }
+      responses:
+        "201":
+          description: Mint transaction submitted and confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hash, readingHash]
+                properties:
+                  hash: { type: string, description: Stellar transaction hash }
+                  readingHash: { type: string, description: SHA-256 hex committed on-chain }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/certificates/{id}:
+    get:
+      summary: Get an export certificate
+      operationId: getExportCertificate
+      tags: [certificates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[1-9][0-9]*$" }
+      responses:
+        "200":
+          description: Certificate metadata and on-chain verification details
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [certificate, verification]
+                properties:
+                  certificate: { $ref: "#/components/schemas/ExportCertificate" }
+                  verification:
+                    type: object
+                    properties:
+                      contractId: { type: string }
+                      network: { type: string }
+                      verifyUrl: { type: string }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/certificates/{id}/pdf:
+    get:
+      summary: Download an export certificate as PDF
+      operationId: downloadExportCertificatePdf
+      tags: [certificates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[1-9][0-9]*$" }
+      responses:
+        "200":
+          description: PDF certificate
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/certificates/{id}/verify:
+    get:
+      summary: Verify a certificate against its reading hash on-chain
+      operationId: verifyExportCertificate
+      tags: [certificates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[1-9][0-9]*$" }
+        - name: readingHash
+          in: query
+          required: true
+          schema: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
+      responses:
+        "200":
+          description: Result of verify_export_certificate
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, readingHash, valid, contractId]
+                properties:
+                  id: { type: string }
+                  readingHash: { type: string }
+                  valid: { type: boolean }
+                  contractId: { type: string }
+        "400":
+          $ref: "#/components/responses/ValidationError"
