@@ -143,3 +143,17 @@ When a meter's balance drops below the threshold after a usage update, the bridg
 - Failed webhook calls are logged but do not crash the IoT bridge
 - Webhook timeouts can be configured via your HTTP client settings
 - Consider idempotency keys on your webhook endpoint to handle retries
+
+## Load Balancing (#889)
+`POST /api/load-balancing/balance` — body `{ capacityKw, pricePerKwh, peakPriceThreshold?, loads: [{ id, demandKw, priority: "critical"|"high"|"normal"|"deferrable", override?: "on"|"off" }] }`.
+Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`. Critical loads are always served; `override` lets users force a load on/off; deferrable loads are shifted when the price exceeds `peakPriceThreshold`.
+
+## Two-Factor Authentication (#890)
+- `POST /api/2fa/enroll` `{ account, phone? }` → TOTP secret, `otpauthUrl` for authenticator apps, 10 single-use recovery codes.
+- `POST /api/2fa/verify` `{ account, code, method?: "totp"|"sms"|"recovery" }` — 5 failures lock the account for 15 min.
+- `POST /api/2fa/sms` `{ account }` — sends SMS fallback code (5-min expiry).
+- `POST /api/2fa/recovery-codes` `{ account, code }` — regenerates recovery codes.
+- Enforcement: `requireTwoFactor` middleware requires 2FA for accounts with value ≥ `TWO_FACTOR_ENFORCE_THRESHOLD`.
+
+## Trading Bot API (#891)
+See `docs/TRADING_API.md`.

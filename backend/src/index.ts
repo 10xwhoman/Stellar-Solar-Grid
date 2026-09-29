@@ -16,6 +16,9 @@ import { statsRouter } from "./routes/stats.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { loadBalancingRouter } from "./routes/loadBalancing.js";
+import { twoFactorRouter } from "./routes/twoFactor.js";
+import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -163,6 +166,9 @@ app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
+app.use("/api/load-balancing", loadBalancingRouter);
+app.use("/api/2fa", writeLimiter, twoFactorRouter);
+app.use("/api/trading", tradingRouter);
 
 // #420: GET /api/health — version, uptime, dependency status
 app.get("/api/health", async (_req, res) => {
@@ -241,7 +247,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR" });
 });
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   startUsageEventRetryWorker();
@@ -253,3 +259,4 @@ app.listen(PORT, () => {
     logger.error("Failed to start IoT bridge", { err });
   }
 });
+attachTradingWebSocket(httpServer);
