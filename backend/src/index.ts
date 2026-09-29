@@ -38,6 +38,7 @@ import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
+import { weatherRouter } from "./routes/weather.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { insightsRouter } from "./routes/insights.js";
@@ -50,10 +51,12 @@ import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import { competitionsRouter } from "./routes/competitions.js";
+import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
+import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
@@ -82,6 +85,11 @@ import { getUsageHistoryPoolStatus } from "./lib/usageHistory.js";
 import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { getReqId } from "./lib/requestContext.js";
 import { exportRouter } from "./routes/export.js";
+import { pricingRouter } from "./routes/pricing.js";
+import { carbonCreditsRouter } from "./routes/carbonCredits.js";
+import { p2pTradingRouter } from "./routes/p2pTrading.js";
+import { adminDashboardRouter } from "./routes/adminDashboard.js";
+import { startPricingScheduler } from "./lib/dynamicPricing.js";
 // Issue #696: Import idempotency cleanup for graceful shutdown
 import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
@@ -172,9 +180,7 @@ app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
-app.use("/api/load-balancing", loadBalancingRouter);
-app.use("/api/2fa", writeLimiter, twoFactorRouter);
-app.use("/api/trading", tradingRouter);
+app.use("/api/weather", weatherRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/usage", usageRouter);
 app.use("/api/analytics", analyticsRouter);
@@ -186,11 +192,22 @@ app.use("/api/provider", providerRouter);
 app.use("/api/widgets", widgetsRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
+app.use("/api/communities", communitiesRouter);
 app.use("/api/smart-home", smartHomeRouter);
 setRelaySender(sendRelayCommand);
 startBillingScheduler();
 startCompetitionScheduler();
+startEnergyForecastRetraining();
 startSmartHomeScheduler();
+// #877: dynamic pricing
+app.use("/api/pricing", pricingRouter);
+startPricingScheduler();
+// #878: carbon credit tracking
+app.use("/api/carbon-credits", carbonCreditsRouter);
+// #879: P2P energy trading
+app.use("/api/p2p", p2pTradingRouter);
+// #880: admin dashboard
+app.use("/api/admin/dashboard", adminDashboardRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 

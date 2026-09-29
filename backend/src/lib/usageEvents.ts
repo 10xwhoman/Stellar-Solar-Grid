@@ -233,6 +233,35 @@ export function getUsageHistory(
   };
 }
 
+export type HourlyUsageSample = { timestamp: string; energyKwh: number };
+
+/** Hourly usage totals in kWh; source events store energy in milli-kWh. */
+export function getHourlyUsage(meterId: string, days = 90, now = new Date()): HourlyUsageSample[] {
+  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
+  const rows = db()
+    .prepare(`
+      SELECT substr(received_at, 1, 13) AS hour, SUM(units) AS units
+      FROM usage_events
+      WHERE meter_id = ? AND status = 'submitted' AND received_at >= ?
+      GROUP BY hour ORDER BY hour ASC
+    `)
+    .all(meterId, cutoff) as Array<{ hour: string; units: number }>;
+  const byHour = new Map(rows.map((row) => [row.hour, Number(row.units) / 1000]));
+  const first = new Date(now.getTime() - days * 86_400_000);
+  first.setUTCMinutes(0, 0, 0);
+  const last = new Date(now);
+  last.setUTCMinutes(0, 0, 0);
+  const samples: HourlyUsageSample[] = [];
+  for (let hour = first.getTime(); hour <= last.getTime(); hour += 3_600_000) {
+    const timestamp = new Date(hour).toISOString();
+    samples.push({
+      timestamp,
+      energyKwh: byHour.get(timestamp.slice(0, 13)) ?? 0,
+    });
+  }
+  return samples;
+}
+
 export function getTypicalWeeklyUsageStroops(meterId: string): number {
   const row = db()
     .prepare(
