@@ -31,6 +31,14 @@ components:
   schemas:
     # ── Common ────────────────────────────────────────────────────────────────
 
+    EnergyForecastModel:
+      type: [object, "null"]
+      properties:
+        algorithm: { type: string, example: seasonal-ridge }
+        trainingSamples: { type: integer }
+        accuracyPct: { type: [number, "null"], minimum: 0, maximum: 100 }
+        trainedAt: { type: string, format: date-time }
+
     Error:
       type: object
       required: [error]
@@ -40,40 +48,24 @@ components:
         code:
           type: string
 
-    MultisigWallet:
+    ExportCertificate:
       type: object
-      description: Organizational N-of-M wallet (#872)
-      properties:
-        address: { type: string }
-        name: { type: string }
-        threshold: { type: integer }
-        signers:
-          type: array
-          items:
-            type: object
-            properties:
-              publicKey: { type: string }
-              label: { type: string, nullable: true }
-              notifications: { type: boolean }
-        createdAt: { type: string, format: date-time }
-
-    MultisigProposal:
-      type: object
+      description: Renewable energy export certificate (#871)
+      required: [id, meterId, producer, owner, energyWh, energyKwh, periodStart, periodEnd, issuedAt, issuer, readingHash, retiredAt, status]
       properties:
         id: { type: string }
-        wallet: { type: string }
-        contractId: { type: string }
-        function: { type: string }
-        description: { type: string }
-        preimageXdr: { type: string, description: HashIdPreimage XDR for SEP-43 signAuthEntry }
-        payloadHex: { type: string, description: SHA-256 of the preimage; the bytes each signer signs }
-        expirationLedger: { type: integer }
-        threshold: { type: integer }
-        status: { type: string, enum: [pending, ready, submitted, failed, expired] }
-        signedBy: { type: array, items: { type: string } }
-        pendingSigners: { type: array, items: { type: string } }
-        txHash: { type: string, nullable: true }
-        error: { type: string, nullable: true }
+        meterId: { type: string }
+        producer: { type: string, description: Meter owner at issuance }
+        owner: { type: string, description: Current holder }
+        energyWh: { type: string, description: Exported watt-hours (decimal string) }
+        energyKwh: { type: number }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        issuer: { type: string }
+        readingHash: { type: string, description: SHA-256 hex of the canonical reading payload }
+        retiredAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, retired] }
 
     TxHash:
       type: object
@@ -1584,193 +1576,77 @@ paths:
                         name: { type: string }
                         peakSunHours: { type: number }
 
-  # ── Multi-signature wallets (#872) ────────────────────────────────────────────
-
-  /api/multisig/wallets:
-    post:
-      summary: Register a deployed multisig wallet contract (admin only)
+  /api/weather/energy-forecast:
+    get:
+      summary: Forecast hourly energy production and consumption
       description: |
-        The signer set and threshold are read from the wallet contract. The
-        request only adds display labels and notification emails; every key
-        supplied must be an on-chain signer. Emails are never returned.
-      operationId: registerMultisigWallet
-      tags: [multisig]
-      security:
-        - AdminKey: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [address, name]
-              properties:
-                address: { type: string, description: Wallet contract address (C...) }
-                name: { type: string }
-                signers:
-                  type: array
-                  items:
-                    type: object
-                    required: [publicKey]
-                    properties:
-                      publicKey: { type: string, description: Signer account (G...) }
-                      email: { type: string, format: email }
-                      label: { type: string }
-      responses:
-        "201":
-          description: Registered wallet
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  wallet: { $ref: "#/components/schemas/MultisigWallet" }
-        "400":
-          $ref: "#/components/responses/ValidationError"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  /api/multisig/wallets/{address}:
-    get:
-      summary: Get a registered multisig wallet
-      operationId: getMultisigWallet
-      tags: [multisig]
+        Returns up to 48 hourly forecasts using a seasonal regression trained
+        on the preceding 90 days of meter usage and/or registered solar-panel
+        telemetry. OpenWeather hourly conditions are used to adjust estimates.
+        Accuracy is measured on held-out history and is null when unavailable.
+      operationId: getHourlyEnergyForecast
+      tags: [weather]
       parameters:
-        - { name: address, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: Wallet
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  wallet: { $ref: "#/components/schemas/MultisigWallet" }
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  /api/multisig/wallets/{address}/proposals:
-    get:
-      summary: List a wallet's proposals
-      operationId: listMultisigProposals
-      tags: [multisig]
-      parameters:
-        - { name: address, in: path, required: true, schema: { type: string } }
-        - name: status
+        - name: meterId
           in: query
-          schema: { type: string, enum: [pending, ready, submitted, failed, expired] }
+          description: Meter whose historical milli-kWh usage should be forecast.
+          schema: { type: string, maxLength: 64 }
+        - name: deviceId
+          in: query
+          description: Registered solar_panel device whose production should be forecast.
+          schema: { type: string, maxLength: 100 }
+        - name: lat
+          in: query
+          description: Latitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -90, maximum: 90 }
+        - name: lon
+          in: query
+          description: Longitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -180, maximum: 180 }
+        - name: hours
+          in: query
+          description: Forecast horizon in whole hours (default 48).
+          schema: { type: integer, minimum: 1, maximum: 48, default: 48 }
       responses:
         "200":
-          description: Proposals, newest first
+          description: Hourly forecast and per-model holdout accuracy.
           content:
             application/json:
               schema:
                 type: object
+                required: [horizonHours, generatedAt, location, weatherStale, models, forecast]
                 properties:
-                  proposals:
+                  meterId: { type: [string, "null"] }
+                  deviceId: { type: [string, "null"] }
+                  horizonHours: { type: integer, minimum: 1, maximum: 48 }
+                  generatedAt: { type: string, format: date-time }
+                  weatherStale: { type: boolean }
+                  models:
+                    type: object
+                    properties:
+                      production: { $ref: "#/components/schemas/EnergyForecastModel" }
+                      consumption: { $ref: "#/components/schemas/EnergyForecastModel" }
+                  forecast:
                     type: array
-                    items: { $ref: "#/components/schemas/MultisigProposal" }
-    post:
-      summary: Propose a SolarGrid action that needs the wallet's authorization
-      description: |
-        Simulates the call, fixes the authorization entry's expiration and
-        returns the payload each signer must sign (SEP-43 signAuthEntry on
-        preimageXdr). Signers with an email address are notified.
-      operationId: createMultisigProposal
-      tags: [multisig]
-      parameters:
-        - { name: address, in: path, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [action, params]
-              properties:
-                action:
-                  type: string
-                  enum: [make_payment, transfer_meter, set_emergency_contact, add_delegate, remove_delegate]
-                params:
-                  type: object
-                  description: |
-                    make_payment {meterId, amount (stroops), plan, memo?};
-                    transfer_meter {meterId, newOwner}; set_emergency_contact
-                    {meterId, contact or null}; add_delegate / remove_delegate
-                    {meterId, delegate}
-                proposer: { type: string, description: Optional signer account proposing }
-      responses:
-        "201":
-          description: Proposal created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  proposal: { $ref: "#/components/schemas/MultisigProposal" }
+                    items:
+                      type: object
+                      required: [timestamp, productionKwh, consumptionKwh, weather]
+                      properties:
+                        timestamp: { type: string, format: date-time }
+                        productionKwh: { type: [number, "null"] }
+                        consumptionKwh: { type: [number, "null"] }
+                        weather:
+                          type: object
+                          properties:
+                            temperatureC: { type: number }
+                            cloudCoverPct: { type: number }
+                            precipitationProbability: { type: number }
+                            condition: { type: string }
+                            productionFactor: { type: number }
+                            consumptionTemperatureFactor: { type: number }
         "400":
           $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
-
-  /api/multisig/proposals/{id}:
-    get:
-      summary: Get a proposal
-      operationId: getMultisigProposal
-      tags: [multisig]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: Proposal
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  proposal: { $ref: "#/components/schemas/MultisigProposal" }
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  /api/multisig/proposals/{id}/signatures:
-    post:
-      summary: Add a signer's signature
-      description: The signature is verified against the payload and the wallet's signer set before it is stored.
-      operationId: signMultisigProposal
-      tags: [multisig]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [publicKey, signature]
-              properties:
-                publicKey: { type: string, description: Signer account (G...) }
-                signature: { type: string, description: 64-byte ed25519 signature, hex or base64 }
-      responses:
-        "200":
-          description: Updated proposal (status becomes ready at the threshold)
-        "400":
-          $ref: "#/components/responses/ValidationError"
-        "403":
-          description: Key is not a signer of the wallet
-        "409":
-          description: Already signed, expired or closed
-
-  /api/multisig/proposals/{id}/submit:
-    post:
-      summary: Submit a proposal that reached its threshold
-      operationId: submitMultisigProposal
-      tags: [multisig]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: Submitted; txHash is set
-        "409":
-          description: Not ready or expired
         "502":
-          description: The network rejected the transaction; error is set
+          description: Weather provider did not return a usable 48-hour forecast.

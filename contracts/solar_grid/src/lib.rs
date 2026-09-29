@@ -7,11 +7,13 @@ use soroban_sdk::{
     Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
+mod certificates;
 mod multi_asset;
 mod staking;
 mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
+pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
 pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 
@@ -80,6 +82,14 @@ pub enum ContractError {
     PaymentDurationTooLarge = 43,
     /// `now + duration` would overflow the u64 ledger timestamp (#745).
     TimestampOverflow = 44,
+    /// No export certificate exists with the given id (Issue #871).
+    CertificateNotFound = 50,
+    /// Certificate period is empty or ends in the future (Issue #871).
+    InvalidCertificatePeriod = 51,
+    /// Certificate period overlaps energy already certified for the meter.
+    CertificatePeriodOverlap = 52,
+    /// The certificate has been retired and can no longer change hands.
+    CertificateRetired = 53,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -1526,6 +1536,22 @@ impl SolarGridContract {
         plan: PaymentPlan,
         memo: Option<String>,
     ) -> Result<(), ContractError> {
+        payer.require_auth();
+        Self::pay_meter(env, meter_id, payer, amount, plan, memo)
+    }
+
+    /// Payment logic shared by `make_payment` and `batch_pay_group`. Callers
+    /// must have already authorized `payer`: Soroban rejects a second
+    /// `require_auth` for the same address within one invocation, so a batch
+    /// authorizes once and then applies each payment through this helper.
+    fn pay_meter(
+        env: Env,
+        meter_id: String,
+        payer: Address,
+        amount: i128,
+        plan: PaymentPlan,
+        memo: Option<String>,
+    ) -> Result<(), ContractError> {
         if Self::pause_is_active(&env) {
             return Err(ContractError::ContractPaused);
         }
@@ -1537,7 +1563,6 @@ impl SolarGridContract {
         {
             return Err(ContractError::ContractFrozen);
         }
-        payer.require_auth();
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -2812,19 +2837,24 @@ impl SolarGridContract {
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
+        Self::compute_distribution(&env, amount)
+    }
 
+    /// Per-collaborator payout of `amount` by basis-point share. Callers are
+    /// responsible for authorization and validating `amount`.
+    fn compute_distribution(env: &Env, amount: i128) -> Result<Map<Address, i128>, ContractError> {
         let collabs: Vec<Address> = env
             .storage()
             .instance()
             .get(&COLLABS)
-            .unwrap_or(Vec::new(&env));
+            .unwrap_or(Vec::new(env));
         let shares: Map<Address, u32> = env
             .storage()
             .instance()
             .get(&SHARES)
-            .unwrap_or(Map::new(&env));
+            .unwrap_or(Map::new(env));
 
-        let mut result: Map<Address, i128> = Map::new(&env);
+        let mut result: Map<Address, i128> = Map::new(env);
         for collaborator in collabs.iter() {
             let bp = shares.get(collaborator.clone()).unwrap_or(0) as i128;
             // Issue #695: Use checked_mul to prevent integer overflow
@@ -2839,7 +2869,7 @@ impl SolarGridContract {
     }
 
     /// Distribute `amount` stroops and perform the actual token transfers atomically.
-    /// Uses `distribute` internally to compute shares, then transfers to each collaborator.
+    /// Computes shares like `distribute`, then transfers to each collaborator.
     ///
     /// SECURITY: Implements checks-effects-interactions pattern to prevent reentrancy.
     /// All payouts are computed and recorded in state before external transfer calls.
@@ -2859,7 +2889,7 @@ impl SolarGridContract {
         let token_address = Self::get_token_address(&env)?;
 
         // ── EFFECTS ─────────────────────────────────────────────────────────
-        let payouts = Self::distribute(env.clone(), amount)?;
+        let payouts = Self::compute_distribution(&env, amount)?;
 
         env.events()
             .publish((EVT_NS, symbol_short!("distrib")), (amount,));
@@ -3292,7 +3322,7 @@ impl SolarGridContract {
         let group: MeterGroup = env.storage().persistent().get(&DataKey::MeterGroup(group_id)).ok_or(ContractError::MeterGroupNotFound)?;
         if group.meter_ids.len() == 0 || amount <= 0 { return Err(ContractError::InvalidAmount); }
         payer.require_auth(); let count = i128::from(group.meter_ids.len()); let share = amount / count; let mut remainder = amount % count; let mut paid = Vec::new(&env);
-        for id in group.meter_ids.iter() { let part = share + if remainder > 0 { remainder -= 1; 1 } else { 0 }; Self::make_payment(env.clone(), id.clone(), payer.clone(), part, plan.clone(), memo.clone())?; paid.push_back(id); } Ok(paid)
+        for id in group.meter_ids.iter() { let part = share + if remainder > 0 { remainder -= 1; 1 } else { 0 }; Self::pay_meter(env.clone(), id.clone(), payer.clone(), part, plan.clone(), memo.clone())?; paid.push_back(id); } Ok(paid)
     }
     pub fn set_referral_bonus_percent(env: Env, percent: u32) -> Result<(), ContractError> { Self::require_admin(&env)?; if percent > 100 { return Err(ContractError::InvalidReferral); } env.storage().instance().set(&DataKey::ReferralBonusPercent, &percent); Ok(()) }
     pub fn set_referrer(env: Env, referred: Address, referrer: Address) -> Result<(), ContractError> { referred.require_auth(); if referred == referrer || env.storage().persistent().has(&DataKey::Referrer(referred.clone())) { return Err(ContractError::InvalidReferral); } env.storage().persistent().set(&DataKey::Referrer(referred), &referrer); let key = DataKey::ReferralStats(referrer); let mut stats: ReferralStats = env.storage().persistent().get(&key).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }); stats.referred_count = stats.referred_count.saturating_add(1); env.storage().persistent().set(&key, &stats); Ok(()) }
