@@ -166,7 +166,14 @@ impl SolarGridContract {
 
         env.events().publish(
             (EVT_NS, symbol_short!("cert_mint"), id),
-            (meter_id, meter.owner, energy_wh, period_start, period_end, reading_hash),
+            (
+                meter_id,
+                meter.owner,
+                energy_wh,
+                period_start,
+                period_end,
+                reading_hash,
+            ),
         );
         Ok(id)
     }
@@ -183,9 +190,16 @@ impl SolarGridContract {
 
     /// Ids of the certificates currently held by `owner`, oldest first.
     /// `limit` is capped at [`MAX_CERTIFICATE_PAGE`].
-    pub fn get_certificates_by_owner(env: Env, owner: Address, offset: u32, limit: u32) -> Vec<u64> {
+    pub fn get_certificates_by_owner(
+        env: Env,
+        owner: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
         let ids = owned(&env, &owner);
-        let end = offset.saturating_add(limit.min(MAX_CERTIFICATE_PAGE)).min(ids.len());
+        let end = offset
+            .saturating_add(limit.min(MAX_CERTIFICATE_PAGE))
+            .min(ids.len());
         if offset >= end {
             return Vec::new(&env);
         }
@@ -203,7 +217,11 @@ impl SolarGridContract {
 
     /// Transfer a certificate to `to`. The current holder must authorize.
     /// Retired certificates cannot be transferred.
-    pub fn transfer_export_certificate(env: Env, id: u64, to: Address) -> Result<(), ContractError> {
+    pub fn transfer_export_certificate(
+        env: Env,
+        id: u64,
+        to: Address,
+    ) -> Result<(), ContractError> {
         let mut certificate = load(&env, id)?;
         certificate.owner.require_auth();
         if certificate.retired_at.is_some() {

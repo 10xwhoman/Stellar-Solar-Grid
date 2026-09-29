@@ -31,7 +31,14 @@ fn setup() -> Setup {
     let meter = String::from_str(&env, "SOLAR-1");
     client.allowlist_add(&producer);
     client.register_meter(&meter, &producer);
-    Setup { env, client, admin, oracle, producer, meter }
+    Setup {
+        env,
+        client,
+        admin,
+        oracle,
+        producer,
+        meter,
+    }
 }
 
 fn hash(env: &Env, seed: u8) -> BytesN<32> {
@@ -41,9 +48,14 @@ fn hash(env: &Env, seed: u8) -> BytesN<32> {
 #[test]
 fn oracle_mints_certificate_with_full_metadata() {
     let s = setup();
-    let id = s
-        .client
-        .mint_export_certificate(&s.oracle, &s.meter, &12_500, &10_000, &20_000, &hash(&s.env, 7));
+    let id = s.client.mint_export_certificate(
+        &s.oracle,
+        &s.meter,
+        &12_500,
+        &10_000,
+        &20_000,
+        &hash(&s.env, 7),
+    );
     assert_eq!(id, 1);
 
     // Only the issuer's authorization was required.
@@ -84,7 +96,9 @@ fn mint_emits_event_with_metadata() {
         let soroban_sdk::xdr::ContractEventBody::V0(v0) = &e.body;
         let topics: soroban_sdk::Vec<Val> = soroban_sdk::Vec::from_iter(
             &s.env,
-            v0.topics.iter().map(|t| Val::try_from_val(&s.env, t).unwrap()),
+            v0.topics
+                .iter()
+                .map(|t| Val::try_from_val(&s.env, t).unwrap()),
         );
         topics == expected_topics
     });
@@ -127,21 +141,25 @@ fn rejects_invalid_amounts_periods_and_meters() {
     let s = setup();
     let h = hash(&s.env, 2);
     assert_eq!(
-        s.client.try_mint_export_certificate(&s.oracle, &s.meter, &0, &0, &10, &h),
+        s.client
+            .try_mint_export_certificate(&s.oracle, &s.meter, &0, &0, &10, &h),
         Err(Ok(ContractError::InvalidAmount))
     );
     assert_eq!(
-        s.client.try_mint_export_certificate(&s.oracle, &s.meter, &1, &10, &10, &h),
+        s.client
+            .try_mint_export_certificate(&s.oracle, &s.meter, &1, &10, &10, &h),
         Err(Ok(ContractError::InvalidCertificatePeriod))
     );
     assert_eq!(
-        s.client.try_mint_export_certificate(&s.oracle, &s.meter, &1, &10, &100_001, &h),
+        s.client
+            .try_mint_export_certificate(&s.oracle, &s.meter, &1, &10, &100_001, &h),
         Err(Ok(ContractError::InvalidCertificatePeriod)),
         "periods cannot end in the future"
     );
     let unknown = String::from_str(&s.env, "NOPE");
     assert_eq!(
-        s.client.try_mint_export_certificate(&s.oracle, &unknown, &1, &0, &10, &h),
+        s.client
+            .try_mint_export_certificate(&s.oracle, &unknown, &1, &0, &10, &h),
         Err(Ok(ContractError::MeterNotFound))
     );
 }
@@ -182,12 +200,20 @@ fn overlapping_periods_cannot_be_certified_twice() {
 fn transfer_moves_ownership_and_indexes() {
     let s = setup();
     let h = hash(&s.env, 4);
-    let first = s.client.mint_export_certificate(&s.oracle, &s.meter, &1, &0, &10, &h);
-    let second = s.client.mint_export_certificate(&s.oracle, &s.meter, &1, &10, &20, &h);
+    let first = s
+        .client
+        .mint_export_certificate(&s.oracle, &s.meter, &1, &0, &10, &h);
+    let second = s
+        .client
+        .mint_export_certificate(&s.oracle, &s.meter, &1, &10, &20, &h);
     let buyer = Address::generate(&s.env);
 
     s.client.transfer_export_certificate(&first, &buyer);
-    assert_eq!(s.env.auths()[0].0, s.producer, "holder must sign the transfer");
+    assert_eq!(
+        s.env.auths()[0].0,
+        s.producer,
+        "holder must sign the transfer"
+    );
     assert_eq!(s.client.get_export_certificate(&first).owner, buyer);
     assert_eq!(s.client.get_export_certificate(&first).producer, s.producer);
     assert_eq!(
@@ -211,7 +237,10 @@ fn retired_certificates_are_final() {
         .mint_export_certificate(&s.oracle, &s.meter, &1, &0, &10, &hash(&s.env, 5));
     s.env.ledger().with_mut(|l| l.timestamp = 100_500);
     s.client.retire_export_certificate(&id);
-    assert_eq!(s.client.get_export_certificate(&id).retired_at, Some(100_500));
+    assert_eq!(
+        s.client.get_export_certificate(&id).retired_at,
+        Some(100_500)
+    );
     assert_eq!(
         s.client.try_retire_export_certificate(&id),
         Err(Ok(ContractError::CertificateRetired))
@@ -252,7 +281,12 @@ fn owner_listing_is_paginated_and_capped() {
         s.client.get_certificates_by_owner(&s.producer, &1, &2),
         soroban_sdk::vec![&s.env, 2u64, 3u64]
     );
-    assert_eq!(s.client.get_certificates_by_owner(&s.producer, &5, &10).len(), 0);
+    assert_eq!(
+        s.client
+            .get_certificates_by_owner(&s.producer, &5, &10)
+            .len(),
+        0
+    );
     assert_eq!(
         s.client
             .get_certificates_by_owner(&s.producer, &0, &(MAX_CERTIFICATE_PAGE + 50))
@@ -284,8 +318,8 @@ fn certificates_survive_meter_ownership_transfer() {
     // Existing certificates stay with whoever holds them; new ones go to the
     // meter's new owner.
     assert_eq!(s.client.get_export_certificate(&id).owner, s.producer);
-    let next = s
-        .client
-        .mint_export_certificate(&s.oracle, &s.meter, &1, &10, &20, &hash(&s.env, 1));
+    let next =
+        s.client
+            .mint_export_certificate(&s.oracle, &s.meter, &1, &10, &20, &hash(&s.env, 1));
     assert_eq!(s.client.get_export_certificate(&next).producer, new_owner);
 }
