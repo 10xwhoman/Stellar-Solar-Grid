@@ -14,7 +14,7 @@ import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
 import * as OpenApiValidator from "express-openapi-validator";
 
-import { stellarService, server } from "./lib/stellar.js";
+import { stellarService, server, NETWORK_PASSPHRASE } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { receiptsRouter } from "./routes/receipts.js";
