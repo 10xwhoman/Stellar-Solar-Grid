@@ -86,7 +86,10 @@ fn signers(env: &Env) -> Vec<BytesN<32>> {
 }
 
 fn threshold(env: &Env) -> u32 {
-    env.storage().instance().get(&DataKey::Threshold).unwrap_or(0)
+    env.storage()
+        .instance()
+        .get(&DataKey::Threshold)
+        .unwrap_or(0)
 }
 
 fn validate(signers: &Vec<BytesN<32>>, threshold: u32) -> Result<(), WalletError> {
@@ -108,7 +111,9 @@ fn validate(signers: &Vec<BytesN<32>>, threshold: u32) -> Result<(), WalletError
 
 fn store(env: &Env, signers: &Vec<BytesN<32>>, threshold: u32) {
     env.storage().instance().set(&DataKey::Signers, signers);
-    env.storage().instance().set(&DataKey::Threshold, &threshold);
+    env.storage()
+        .instance()
+        .set(&DataKey::Threshold, &threshold);
     SignersUpdated {
         signer_count: signers.len(),
         threshold,
@@ -119,7 +124,11 @@ fn store(env: &Env, signers: &Vec<BytesN<32>>, threshold: u32) {
 #[contractimpl]
 impl MultisigWallet {
     /// Deploy the wallet with its initial signer set and approval threshold.
-    pub fn __constructor(env: Env, signers: Vec<BytesN<32>>, threshold: u32) -> Result<(), WalletError> {
+    pub fn __constructor(
+        env: Env,
+        signers: Vec<BytesN<32>>,
+        threshold: u32,
+    ) -> Result<(), WalletError> {
         validate(&signers, threshold)?;
         store(&env, &signers, threshold);
         Ok(())

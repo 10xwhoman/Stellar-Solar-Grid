@@ -12,9 +12,9 @@ use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Ledger},
     vec,
     xdr::{
-        HashIdPreimage, HashIdPreimageSorobanAuthorization, InvokeContractArgs, Limits, ScAddress, ScSymbol,
-        ScVal, SorobanAddressCredentials, SorobanAuthorizationEntry, SorobanAuthorizedFunction,
-        SorobanAuthorizedInvocation, SorobanCredentials, VecM, WriteXdr,
+        HashIdPreimage, HashIdPreimageSorobanAuthorization, InvokeContractArgs, Limits, ScAddress,
+        ScSymbol, ScVal, SorobanAddressCredentials, SorobanAuthorizationEntry,
+        SorobanAuthorizedFunction, SorobanAuthorizedInvocation, SorobanCredentials, VecM, WriteXdr,
     },
     Address, Bytes, BytesN, Env, IntoVal, String, TryFromVal, Val, Vec,
 };
@@ -40,14 +40,28 @@ fn sign(env: &Env, payload: &[u8; 32], keys: &[&SigningKey]) -> Vec<Signature> {
     Vec::from_iter(env, sigs)
 }
 
-fn deploy(env: &Env, keys: &[&SigningKey], threshold: u32) -> (Address, MultisigWalletClient<'static>) {
+fn deploy(
+    env: &Env,
+    keys: &[&SigningKey],
+    threshold: u32,
+) -> (Address, MultisigWalletClient<'static>) {
     let signers = Vec::from_iter(env, keys.iter().map(|k| public(env, k)));
     let id = env.register(MultisigWallet, (signers, threshold));
     (id.clone(), MultisigWalletClient::new(env, &id))
 }
 
-fn check(env: &Env, wallet: &Address, payload: &BytesN<32>, sigs: Vec<Signature>) -> Result<(), Result<WalletError, soroban_sdk::InvokeError>> {
-    env.try_invoke_contract_check_auth::<WalletError>(wallet, payload, sigs.into_val(env), &Vec::<Context>::new(env))
+fn check(
+    env: &Env,
+    wallet: &Address,
+    payload: &BytesN<32>,
+    sigs: Vec<Signature>,
+) -> Result<(), Result<WalletError, soroban_sdk::InvokeError>> {
+    env.try_invoke_contract_check_auth::<WalletError>(
+        wallet,
+        payload,
+        sigs.into_val(env),
+        &Vec::<Context>::new(env),
+    )
 }
 
 // ── Construction and configuration ───────────────────────────────────────────
@@ -58,7 +72,10 @@ fn constructor_stores_signers_and_threshold() {
     let (a, b, c) = (key(1), key(2), key(3));
     let (_, wallet) = deploy(&env, &[&a, &b, &c], 2);
     assert_eq!(wallet.get_threshold(), 2);
-    assert_eq!(wallet.get_signers(), vec![&env, public(&env, &a), public(&env, &b), public(&env, &c)]);
+    assert_eq!(
+        wallet.get_signers(),
+        vec![&env, public(&env, &a), public(&env, &b), public(&env, &c)]
+    );
 }
 
 #[test]
@@ -101,9 +118,18 @@ fn threshold_signatures_are_accepted() {
     let payload = BytesN::<32>::random(&env);
     let raw = payload.to_array();
 
-    assert_eq!(check(&env, &wallet, &payload, sign(&env, &raw, &[&a, &b])), Ok(()));
-    assert_eq!(check(&env, &wallet, &payload, sign(&env, &raw, &[&b, &c])), Ok(()));
-    assert_eq!(check(&env, &wallet, &payload, sign(&env, &raw, &[&a, &b, &c])), Ok(()));
+    assert_eq!(
+        check(&env, &wallet, &payload, sign(&env, &raw, &[&a, &b])),
+        Ok(())
+    );
+    assert_eq!(
+        check(&env, &wallet, &payload, sign(&env, &raw, &[&b, &c])),
+        Ok(())
+    );
+    assert_eq!(
+        check(&env, &wallet, &payload, sign(&env, &raw, &[&a, &b, &c])),
+        Ok(())
+    );
 }
 
 #[test]
@@ -113,7 +139,12 @@ fn fewer_than_threshold_signatures_are_rejected() {
     let (wallet, _) = deploy(&env, &[&a, &b, &c], 2);
     let payload = BytesN::<32>::random(&env);
     assert_eq!(
-        check(&env, &wallet, &payload, sign(&env, &payload.to_array(), &[&a])),
+        check(
+            &env,
+            &wallet,
+            &payload,
+            sign(&env, &payload.to_array(), &[&a])
+        ),
         Err(Ok(WalletError::NotEnoughSignatures))
     );
     assert_eq!(
@@ -143,7 +174,10 @@ fn unsorted_signatures_are_rejected() {
     let payload = BytesN::<32>::random(&env);
     let sorted = sign(&env, &payload.to_array(), &[&a, &b]);
     let reversed = vec![&env, sorted.get(1).unwrap(), sorted.get(0).unwrap()];
-    assert_eq!(check(&env, &wallet, &payload, reversed), Err(Ok(WalletError::SignaturesNotSorted)));
+    assert_eq!(
+        check(&env, &wallet, &payload, reversed),
+        Err(Ok(WalletError::SignaturesNotSorted))
+    );
 }
 
 #[test]
@@ -153,7 +187,12 @@ fn signatures_from_outsiders_are_rejected() {
     let (wallet, _) = deploy(&env, &[&a, &b], 2);
     let payload = BytesN::<32>::random(&env);
     assert_eq!(
-        check(&env, &wallet, &payload, sign(&env, &payload.to_array(), &[&a, &outsider])),
+        check(
+            &env,
+            &wallet,
+            &payload,
+            sign(&env, &payload.to_array(), &[&a, &outsider])
+        ),
         Err(Ok(WalletError::UnknownSigner))
     );
 }
@@ -197,17 +236,32 @@ fn signer_management_rules() {
 
     wallet.add_signer(&public(&env, &c));
     assert_eq!(wallet.get_signers().len(), 3);
-    assert_eq!(wallet.try_add_signer(&public(&env, &c)), Err(Ok(WalletError::SignerAlreadyExists)));
+    assert_eq!(
+        wallet.try_add_signer(&public(&env, &c)),
+        Err(Ok(WalletError::SignerAlreadyExists))
+    );
 
     wallet.set_threshold(&3);
     assert_eq!(wallet.get_threshold(), 3);
     // Removing a signer would leave 2 signers under a threshold of 3.
-    assert_eq!(wallet.try_remove_signer(&public(&env, &c)), Err(Ok(WalletError::InvalidThreshold)));
+    assert_eq!(
+        wallet.try_remove_signer(&public(&env, &c)),
+        Err(Ok(WalletError::InvalidThreshold))
+    );
     wallet.set_threshold(&2);
     wallet.remove_signer(&public(&env, &c));
-    assert_eq!(wallet.get_signers(), vec![&env, public(&env, &a), public(&env, &b)]);
-    assert_eq!(wallet.try_remove_signer(&public(&env, &c)), Err(Ok(WalletError::SignerNotFound)));
-    assert_eq!(wallet.try_set_threshold(&0), Err(Ok(WalletError::InvalidThreshold)));
+    assert_eq!(
+        wallet.get_signers(),
+        vec![&env, public(&env, &a), public(&env, &b)]
+    );
+    assert_eq!(
+        wallet.try_remove_signer(&public(&env, &c)),
+        Err(Ok(WalletError::SignerNotFound))
+    );
+    assert_eq!(
+        wallet.try_set_threshold(&0),
+        Err(Ok(WalletError::InvalidThreshold))
+    );
 }
 
 // ── End to end with the SolarGrid contract ───────────────────────────────────
@@ -236,15 +290,29 @@ fn grid_with_wallet(keys: &[&SigningKey]) -> Grid {
     env.mock_all_auths();
     grid.allowlist_add(&wallet);
     grid.register_meter(&meter, &wallet);
-    Grid { env, grid, wallet, meter }
+    Grid {
+        env,
+        grid,
+        wallet,
+        meter,
+    }
 }
 
 /// Build a signed authorization entry for `wallet` invoking `function(args)`
 /// on the grid contract, signed by `keys`.
-fn signed_entry(g: &Grid, nonce: i64, function: &str, args: std::vec::Vec<Val>, keys: &[&SigningKey]) -> SorobanAuthorizationEntry {
+fn signed_entry(
+    g: &Grid,
+    nonce: i64,
+    function: &str,
+    args: std::vec::Vec<Val>,
+    keys: &[&SigningKey],
+) -> SorobanAuthorizationEntry {
     let env = &g.env;
     let expiration = env.ledger().sequence() + 100;
-    let xdr_args: std::vec::Vec<ScVal> = args.iter().map(|v| ScVal::try_from_val(env, v).unwrap()).collect();
+    let xdr_args: std::vec::Vec<ScVal> = args
+        .iter()
+        .map(|v| ScVal::try_from_val(env, v).unwrap())
+        .collect();
     let invocation = SorobanAuthorizedInvocation {
         function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
             contract_address: ScAddress::from(&g.grid.address),
@@ -260,7 +328,10 @@ fn signed_entry(g: &Grid, nonce: i64, function: &str, args: std::vec::Vec<Val>, 
         invocation: invocation.clone(),
     });
     let preimage_xdr = preimage.to_xdr(Limits::none()).unwrap();
-    let payload = env.crypto().sha256(&Bytes::from_slice(env, &preimage_xdr)).to_array();
+    let payload = env
+        .crypto()
+        .sha256(&Bytes::from_slice(env, &preimage_xdr))
+        .to_array();
     let signatures: Val = sign(env, &payload, keys).into_val(env);
     SorobanAuthorizationEntry {
         credentials: SorobanCredentials::Address(SorobanAddressCredentials {
@@ -278,7 +349,10 @@ fn wallet_can_register_as_meter_owner() {
     let (a, b, c) = (key(1), key(2), key(3));
     let g = grid_with_wallet(&[&a, &b, &c]);
     assert_eq!(g.grid.get_meter(&g.meter).owner, g.wallet);
-    assert_eq!(g.grid.get_meters_by_owner(&g.wallet), vec![&g.env, g.meter.clone()]);
+    assert_eq!(
+        g.grid.get_meters_by_owner(&g.wallet),
+        vec![&g.env, g.meter.clone()]
+    );
 }
 
 #[test]
@@ -286,10 +360,20 @@ fn owner_action_succeeds_with_two_of_three_signatures() {
     let (a, b, c) = (key(1), key(2), key(3));
     let g = grid_with_wallet(&[&a, &b, &c]);
     let contact = Address::generate(&g.env);
-    let args = std::vec![g.meter.clone().into_val(&g.env), Some(contact.clone()).into_val(&g.env)];
+    let args = std::vec![
+        g.meter.clone().into_val(&g.env),
+        Some(contact.clone()).into_val(&g.env)
+    ];
 
-    g.env.set_auths(&[signed_entry(&g, 1, "set_emergency_contact", args, &[&a, &c])]);
-    g.grid.set_emergency_contact(&g.meter, &Some(contact.clone()));
+    g.env.set_auths(&[signed_entry(
+        &g,
+        1,
+        "set_emergency_contact",
+        args,
+        &[&a, &c],
+    )]);
+    g.grid
+        .set_emergency_contact(&g.meter, &Some(contact.clone()));
     assert_eq!(g.grid.get_emergency_contact(&g.meter), Some(contact));
 }
 
@@ -298,10 +382,17 @@ fn owner_action_fails_with_one_of_three_signatures() {
     let (a, b, c) = (key(1), key(2), key(3));
     let g = grid_with_wallet(&[&a, &b, &c]);
     let contact = Address::generate(&g.env);
-    let args = std::vec![g.meter.clone().into_val(&g.env), Some(contact.clone()).into_val(&g.env)];
+    let args = std::vec![
+        g.meter.clone().into_val(&g.env),
+        Some(contact.clone()).into_val(&g.env)
+    ];
 
-    g.env.set_auths(&[signed_entry(&g, 1, "set_emergency_contact", args, &[&b])]);
-    assert!(g.grid.try_set_emergency_contact(&g.meter, &Some(contact)).is_err());
+    g.env
+        .set_auths(&[signed_entry(&g, 1, "set_emergency_contact", args, &[&b])]);
+    assert!(g
+        .grid
+        .try_set_emergency_contact(&g.meter, &Some(contact))
+        .is_err());
     assert_eq!(g.grid.get_emergency_contact(&g.meter), None);
 }
 
@@ -311,18 +402,39 @@ fn signatures_are_bound_to_the_exact_invocation() {
     let g = grid_with_wallet(&[&a, &b, &c]);
     let approved = Address::generate(&g.env);
     let attacker = Address::generate(&g.env);
-    let args = std::vec![g.meter.clone().into_val(&g.env), Some(approved).into_val(&g.env)];
+    let args = std::vec![
+        g.meter.clone().into_val(&g.env),
+        Some(approved).into_val(&g.env)
+    ];
 
     // Valid 2-of-3 approval for one contact cannot be replayed for another.
-    g.env.set_auths(&[signed_entry(&g, 1, "set_emergency_contact", args, &[&a, &b])]);
-    assert!(g.grid.try_set_emergency_contact(&g.meter, &Some(attacker)).is_err());
+    g.env.set_auths(&[signed_entry(
+        &g,
+        1,
+        "set_emergency_contact",
+        args,
+        &[&a, &b],
+    )]);
+    assert!(g
+        .grid
+        .try_set_emergency_contact(&g.meter, &Some(attacker))
+        .is_err());
 }
 
 #[test]
 fn outsiders_cannot_authorize_for_the_wallet() {
     let (a, b, c) = (key(1), key(2), key(3));
     let g = grid_with_wallet(&[&a, &b, &c]);
-    let args = std::vec![g.meter.clone().into_val(&g.env), None::<Address>.into_val(&g.env)];
-    g.env.set_auths(&[signed_entry(&g, 1, "set_emergency_contact", args, &[&a, &key(42)])]);
+    let args = std::vec![
+        g.meter.clone().into_val(&g.env),
+        None::<Address>.into_val(&g.env)
+    ];
+    g.env.set_auths(&[signed_entry(
+        &g,
+        1,
+        "set_emergency_contact",
+        args,
+        &[&a, &key(42)],
+    )]);
     assert!(g.grid.try_set_emergency_contact(&g.meter, &None).is_err());
 }
