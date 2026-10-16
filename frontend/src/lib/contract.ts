@@ -261,3 +261,121 @@ export function cancelUnstake(staker: string): Promise<string> {
 export function claimStakingRewards(staker: string): Promise<string> {
   return contractInvoke(staker, "claim_staking_rewards", [addrVal(staker)]);
 }
+
+// ── Scheduled energy usage (#1001) ──────────────────────────────────────────
+
+export interface Schedule {
+  circuit_id: string;
+  /** Bitmask of days of week, bit 0 = Sunday .. bit 6 = Saturday. */
+  days: number;
+  /** Minute-of-day (0-1439, UTC) the circuit should turn on. */
+  start_time: number;
+  /** Minute-of-day (0-1439, UTC) the circuit should turn off. */
+  end_time: number;
+  enabled: boolean;
+}
+
+export interface CircuitOverride {
+  forced_state: boolean;
+  until: bigint;
+  set_by: string;
+}
+
+/** Encode a `Schedule` as the sorted-map ScVal soroban_sdk structs use. */
+function scheduleToScVal(schedule: Schedule): StellarSdk.xdr.ScVal {
+  const entries: [string, StellarSdk.xdr.ScVal][] = [
+    ["circuit_id", StellarSdk.nativeToScVal(schedule.circuit_id, { type: "symbol" })],
+    ["days", StellarSdk.nativeToScVal(schedule.days, { type: "u32" })],
+    ["enabled", StellarSdk.nativeToScVal(schedule.enabled, { type: "bool" })],
+    ["end_time", StellarSdk.nativeToScVal(schedule.end_time, { type: "u32" })],
+    ["start_time", StellarSdk.nativeToScVal(schedule.start_time, { type: "u32" })],
+  ];
+  return StellarSdk.xdr.ScVal.scvMap(
+    entries.map(([key, val]) => new StellarSdk.xdr.ScMapEntry({ key: StellarSdk.nativeToScVal(key, { type: "symbol" }), val })),
+  );
+}
+
+/** Owner: create or replace the schedule for one circuit on a meter. */
+export function setCircuitSchedule(
+  sourceAddress: string,
+  meterId: string,
+  schedule: Schedule,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "set_circuit_schedule", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    scheduleToScVal(schedule),
+  ]);
+}
+
+export async function getCircuitSchedule(meterId: string, circuitId: string): Promise<Schedule> {
+  const retval = await client.query("get_circuit_schedule", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as Schedule;
+}
+
+/** Owner: remove a circuit's schedule. */
+export function clearCircuitSchedule(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "clear_circuit_schedule", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+  ]);
+}
+
+/** Owner: force a circuit on/off until `until` (unix seconds) — e.g. for an emergency. */
+export function overrideCircuit(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+  forcedState: boolean,
+  until: bigint,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "override_circuit", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(forcedState, { type: "bool" }),
+    StellarSdk.nativeToScVal(until, { type: "u64" }),
+  ]);
+}
+
+/** Owner: end an active override early so the schedule resumes immediately. */
+export function clearCircuitOverride(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "clear_circuit_override", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+  ]);
+}
+
+export async function getCircuitOverride(
+  meterId: string,
+  circuitId: string,
+): Promise<CircuitOverride | null> {
+  const retval = await client.query("get_circuit_override", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+  ]);
+  const native = StellarSdk.scValToNative(retval);
+  return native ? (native as CircuitOverride) : null;
+}
+
+export async function circuitShouldBeOn(
+  meterId: string,
+  circuitId: string,
+  now: bigint,
+): Promise<boolean> {
+  const retval = await client.query("circuit_should_be_on", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(now, { type: "u64" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as boolean;
+}

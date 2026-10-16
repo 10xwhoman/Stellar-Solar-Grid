@@ -368,3 +368,125 @@ Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`
 See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.
+
+## Emergency Contact Management (#1000)
+
+Lets a user register people to notify in a critical event, and choose which event types notify
+each contact. This is unrelated to `routes/emergency.ts` (#893)'s "emergency energy sharing" pool
+for outages — these are personal contacts for a user's own account.
+
+- `POST /api/users/emergency-contacts` — add a contact. Body:
+  ```json
+  {
+    "user_address": "G...",
+    "name": "Jane Doe",
+    "phone": "+15551234567",
+    "email": "jane@example.com",
+    "relationship": "Spouse",
+    "notify_on_tamper": true,
+    "notify_on_outage": true
+  }
+  ```
+  At least one of `phone` / `email` is required. `notify_on_tamper` and `notify_on_outage` default
+  to `true` when omitted. Response (201): `{ "contact": { "id", "userAddress", "name", "phone",
+  "email", "relationship", "notifyOnTamper", "notifyOnOutage", "createdAt" } }`.
+
+- `GET /api/users/emergency-contacts?user_address=G...` — list a user's contacts. Response (200):
+  `{ "contacts": [ ... ] }`.
+
+Contacts are stored in `emergency_contacts` (one row per contact, keyed by `user_address`), with a
+`notify_on_tamper` / `notify_on_outage` flag per row controlling which critical events notify that
+contact.
+
+Notification hook: when the theft/tamper monitor (`theftDetection.ts`) raises an alert, or the meter
+health monitor (`meterHealth.ts`) marks a meter `red` after 24h of silence (extended outage), the
+owning user's address is resolved via the device registry (`deviceRegistry.listDevices({ meterId })`)
+and `emergencyContacts.notifyEmergencyContacts(userAddress, eventType, meterId)` is called. That
+function looks up the user's contacts, keeps only those with the matching `notify_on_*` flag
+enabled, and emails each contact that has an email on file via the existing mailer (#902). There is
+no SMS transport in this codebase (`smsProviders.ts` only resolves a region's display shortcode),
+so phone-only contacts are logged rather than silently dropped — delivery for those is not
+guaranteed. Both hooks are best-effort and never block or fail the underlying monitor.
+
+## Provider Revenue Analytics (#1002)
+
+Business/financial analytics for the energy provider — total revenue, MRR, ARPU, churn/retention,
+revenue trends, customer acquisition, and a geographic revenue breakdown. This is distinct from
+`GET /api/provider` (a single running revenue total read from the contract) and from
+`GET /api/analytics/usage` (meter *usage* analytics, not revenue). All endpoints below require the
+`X-Admin-Key` header.
+
+**Data source.** Every successful payment (`POST /api/payments`) is recorded into a dedicated
+`revenue_events` SQLite table (`lib/revenueStore.ts`, pooled better-sqlite3, same pattern as
+`lib/meterNotes.ts`), keyed by the payment's transaction hash so retries/duplicates never
+double-count. The contract itself (`get_provider_revenue`) only exposes one running total with no
+historical breakdown, which is why trends/MRR/ARPU/churn are computed from this event history
+instead. **Caveat:** this history only covers payments made after this feature shipped — there is
+no backfill from on-chain events predating it.
+
+**Geographic breakdown caveat.** The codebase has no dedicated latitude/longitude or
+country/region field on a meter. The closest existing geo dimension is the free-text `location`
+string indexed by `lib/meterMetadataIndex.ts` (the same index `GET /api/meters/map` reads). Each
+payment is tagged with its meter's indexed location at write time; meters with no indexed location
+bucket into `"Unknown"`. This is a simplification, not real geocoding.
+
+- `GET /api/provider/analytics?from=<ISO>&to=<ISO>&granularity=daily|monthly|yearly`
+
+  Query params (all optional):
+  - `from` — ISO date, start of window. Default: 12 months before `to`.
+  - `to` — ISO date, end of window. Default: now.
+  - `granularity` — `daily`, `monthly`, or `yearly`. Default: `monthly`.
+
+  Response (200):
+  ```json
+  {
+    "range": { "from": "2025-10-16T00:00:00.000Z", "to": "2026-10-16T00:00:00.000Z", "granularity": "monthly" },
+    "totalRevenue": 125000000,
+    "totalRevenueXlm": 12.5,
+    "mrr": 10000000,
+    "mrrXlm": 1.0,
+    "arpu": 5000000,
+    "arpuXlm": 0.5,
+    "totalPayments": 42,
+    "activeCustomers": 25,
+    "churn": {
+      "churnRate": 0.12,
+      "retentionRate": 0.88,
+      "previousPeriodCustomers": 25,
+      "currentPeriodCustomers": 24,
+      "retainedCustomers": 22,
+      "churnedCustomers": 3
+    },
+    "trend": [
+      { "bucket": "2026-09", "revenue": 10000000, "paymentCount": 8, "uniqueCustomers": 6 }
+    ],
+    "acquisition": [
+      { "bucket": "2026-09", "newCustomers": 2 }
+    ],
+    "geoBreakdown": [
+      { "region": "Lagos", "revenue": 50000000, "paymentCount": 15, "customers": 9, "percentageOfTotal": 40.0 },
+      { "region": "Unknown", "revenue": 20000000, "paymentCount": 6, "customers": 4, "percentageOfTotal": 16.0 }
+    ]
+  }
+  ```
+
+  Formulas:
+  - **MRR**: sum of revenue recognized within the calendar month (UTC) containing `to`. The
+    platform bills pay-as-you-go rather than fixed subscriptions, so this is "revenue actually
+    collected this month," not a committed run-rate.
+  - **ARPU**: `totalRevenue / distinct paying meters` within the window.
+  - **Churn rate**: comparing two equal-length, back-to-back periods ending at `to` — the fraction
+    of meters that paid in the previous period but did not pay again in the current period.
+    `retentionRate = 1 - churnRate`.
+  - **Customer acquisition**: a meter is counted as newly acquired in the bucket of its first-ever
+    payment (computed over full history, not just the requested window, so a meter whose first
+    payment predates `from` is correctly excluded from "new").
+
+- `GET /api/provider/analytics/export?format=pdf|xlsx&from=<ISO>&to=<ISO>&granularity=daily|monthly|yearly`
+
+  Exports the same analytics summary as a downloadable report. `format` is required.
+  - `format=pdf` returns `application/pdf` (built with the existing dependency-free PDF builder in
+    `lib/pdf.ts`, reused from receipts/bills — no new PDF dependency was added).
+  - `format=xlsx` returns `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` with
+    four sheets: Summary, Revenue Trend, Customer Acquisition, Geographic Breakdown. Built with
+    `exceljs` (added as a new dependency — no Excel-writing library existed in the backend yet).

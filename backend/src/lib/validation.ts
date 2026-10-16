@@ -116,6 +116,49 @@ export const SmsPaymentWebhookSchema = z
   })
   .strict();
 
+export const AddEmergencyContactSchema = z
+  .object({
+    user_address: z
+      .string()
+      .regex(STELLAR_ADDRESS_REGEX, "Invalid user_address format"),
+    name: z.string().trim().min(1, "name is required").max(120, "name must be at most 120 characters"),
+    phone: z.string().trim().min(3).max(32).optional(),
+    email: z.string().trim().email("Invalid email format").max(254).optional(),
+    relationship: z.string().trim().max(60).optional(),
+    notify_on_tamper: z.boolean().optional(),
+    notify_on_outage: z.boolean().optional(),
+  })
+  .strict()
+  .refine((data) => Boolean(data.phone) || Boolean(data.email), {
+    message: "At least one of phone or email is required",
+  });
+
+export const ListEmergencyContactsQuerySchema = z
+  .object({
+    user_address: z
+      .string()
+      .regex(STELLAR_ADDRESS_REGEX, "Invalid user_address format"),
+  })
+  .strict();
+
+export const CreditScoreAddressParamsSchema = z
+  .object({
+    address: z.string().regex(STELLAR_ADDRESS_REGEX, "Invalid address format"),
+  })
+  .strict();
+
+export const CreditScoreOverrideSchema = z
+  .object({
+    score: z.number().int().min(0).max(1000).optional(),
+    credit_limit_stroops: z.number().int().min(0).optional(),
+    reason: z.string().trim().min(1, "reason is required").max(500),
+    expires_at: z.string().datetime().optional(),
+  })
+  .strict()
+  .refine((data) => data.score !== undefined || data.credit_limit_stroops !== undefined, {
+    message: "At least one of score or credit_limit_stroops is required",
+  });
+
 type RequestSchemaSet = {
   body?: ZodTypeAny;
   params?: ZodTypeAny;
@@ -171,3 +214,4 @@ export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
 export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;
+export type AddEmergencyContactInput = z.infer<typeof AddEmergencyContactSchema>;

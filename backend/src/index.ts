@@ -52,6 +52,8 @@ import { meterMapRouter } from "./routes/meterMap.js";
 import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
+import { emergencyContactsRouter } from "./routes/emergencyContacts.js";
+import { creditScoreRouter } from "./routes/creditScore.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import forecastRouter from "./routes/forecast.js";
@@ -75,6 +77,7 @@ import { gridResilienceRouter } from "./routes/gridResilience.js";
 import { privacyRouter } from "./routes/privacy.js";
 import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
+import { startScheduleExecutor } from "./iot/scheduleExecutor.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
@@ -185,6 +188,8 @@ app.use("/api/admin", writeLimiter, adminLoginRouter);
 app.use("/api/meters/map", meterMapRouter);
 app.use("/api/keys", writeLimiter, apiKeysRouter);
 app.use("/api/meters", meterHealthRouter);
+app.use("/api/users/emergency-contacts", emergencyContactsRouter);
+app.use("/api/users", writeLimiter, creditScoreRouter);
 app.use("/api/meters", predictionRouter);
 startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
@@ -308,6 +313,7 @@ const httpServer = app.listen(PORT, () => {
   startUsageEventRetryWorker();
   logger.info("SolarGrid backend listening", { port: PORT });
   startLimitWatcher(stellarService);
+  startScheduleExecutor(stellarService);
   try {
     startIoTBridge();
   } catch (err) {

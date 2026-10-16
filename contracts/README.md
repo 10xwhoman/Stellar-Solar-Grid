@@ -296,3 +296,39 @@ period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
 
 New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
 `CertificatePeriodOverlap` (52), `CertificateRetired` (53).
+
+## Scheduled Energy Usage (#1001)
+
+A weekly on/off schedule per circuit (a sub-load of a meter, identified by an
+arbitrary `circuit_id` string — the device id the backend's device registry
+and frontend already use to address it). Implemented in
+`solar_grid/src/scheduling.rs`.
+
+`Schedule`: `circuit_id`, `days` (bitmask, bit 0 = Sunday .. bit 6 = Saturday),
+`start_time`/`end_time` (minute-of-day, 0..1440, UTC — `start_time >
+end_time` is a window spanning midnight, e.g. 22:00 → 06:00), `enabled`.
+
+| Function | Description |
+|---|---|
+| `set_circuit_schedule(meter_id, schedule)` | Meter owner must authorize. Creates or replaces the schedule for `schedule.circuit_id` |
+| `get_circuit_schedule(meter_id, circuit_id) -> Schedule` | `ScheduleNotFound` if unset |
+| `clear_circuit_schedule(meter_id, circuit_id)` | Owner must authorize |
+| `override_circuit(meter_id, circuit_id, forced_state, until)` | Owner must authorize. Forces the circuit on/off until the ledger timestamp `until` (must be in the future), superseding its schedule — e.g. for an emergency. Lapses automatically; no call needed to end it |
+| `clear_circuit_override(meter_id, circuit_id)` | Owner must authorize. Ends an active override early so the schedule resumes immediately |
+| `get_circuit_override(meter_id, circuit_id) -> Option<CircuitOverride>` | `CircuitOverride`: `forced_state`, `until`, `set_by` |
+| `circuit_should_be_on(meter_id, circuit_id, now) -> bool` | Read-only. An unexpired override wins; otherwise the weekly schedule decides |
+| `execute_scheduled_action(meter_id, circuit_id, now, last_state) -> bool` | IoT entrypoint (no auth required). Evaluates the due state at `now` and, if it differs from `last_state`, publishes `ScheduledActionExecuted`. Always returns the desired state |
+
+The backend's `startScheduleExecutor` (`backend/src/iot/scheduleExecutor.ts`)
+polls every meter-linked device once a minute, calls
+`circuit_should_be_on`/`execute_scheduled_action`, and relays the resulting
+ON/OFF command to the meter the same way contract-driven
+activate/deactivate events do.
+
+Events (`solar`, …, `meter_id`): `sch_set` `(circuit_id)`, `sch_ovr`
+`(circuit_id, forced_state, until)`, `sch_exec` `(circuit_id, desired_state,
+now)` — the `ScheduledActionExecuted` event, published only on a state
+transition.
+
+New errors: `ScheduleNotFound` (73), `InvalidSchedule` (74),
+`InvalidOverrideWindow` (75).

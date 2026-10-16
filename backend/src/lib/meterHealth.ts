@@ -10,6 +10,8 @@
  *   red    — no heartbeat for HEALTH_RED_AFTER_MS (default 24h) → alert raised
  */
 import { logger } from "./logger.js";
+import { listDevices } from "./deviceRegistry.js";
+import { notifyEmergencyContacts } from "./emergencyContacts.js";
 
 export type HealthStatus = "green" | "yellow" | "red";
 
@@ -138,6 +140,22 @@ export function checkStaleMeters(now = Date.now()): string[] {
         { meterId: state.meterId, lastHeartbeat: new Date(state.lastHeartbeat).toISOString() },
         "ALERT: meter has not reported a heartbeat in 24 hours",
       );
+
+      // #1000 — notify the meter owner's emergency contacts on an extended
+      // outage. Best-effort and fire-and-forget: resolve the owning
+      // user_address via the device registry and hand off to the pure
+      // notification helper; a failure here must never break health
+      // monitoring itself.
+      void (async () => {
+        try {
+          const [device] = listDevices({ meterId: state.meterId });
+          if (device?.owner) {
+            await notifyEmergencyContacts(device.owner, "outage", state.meterId);
+          }
+        } catch (error) {
+          logger.warn({ meterId: state.meterId, error }, "Emergency contact notification failed for meter outage");
+        }
+      })();
     }
   }
   return alerted;

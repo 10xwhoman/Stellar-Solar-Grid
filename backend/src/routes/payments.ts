@@ -8,6 +8,7 @@ import { asyncHandler } from "../lib/asyncHandler.js";
 import { idempotency } from "../middleware/idempotency.js";
 import { sendPaymentWebhook, stroopsToXlm } from "../lib/paymentWebhook.js";
 import { saveReceipt } from "../lib/receipts.js";
+import { recordRevenueEvent } from "../lib/revenueStore.js";
 import { emailTrade } from "../lib/billing.js";
 
 export const paymentsRouter = Router();
@@ -115,6 +116,13 @@ paymentsRouter.post(
       date: new Date().toISOString(),
       transactionHash: hash,
     });
+    // #1002: record this payment for the provider revenue analytics dashboard
+    // (MRR/ARPU/churn/trends/geo-breakdown) — see lib/revenueStore.ts.
+    try {
+      recordRevenueEvent({ paymentId: hash, meterId, amount, payer });
+    } catch (err: any) {
+      logger.warn("Failed to record revenue analytics event", { meterId, hash, error: err.message });
+    }
 
     // Issue #692: Send webhook notification for successful payment
     // Fire async webhook in background without blocking response

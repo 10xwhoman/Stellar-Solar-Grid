@@ -10,6 +10,7 @@ use soroban_sdk::{
 mod certificates;
 mod multi_asset;
 mod recs;
+mod scheduling;
 mod staking;
 mod warranty;
 #[cfg(test)]
@@ -20,6 +21,7 @@ pub use recs::{
     RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
     RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
 };
+pub use scheduling::{CircuitOverride, Schedule};
 pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -128,6 +130,13 @@ pub enum ContractError {
     InvalidRecQuantity = 71,
     /// A registry or attestation reference is required.
     ComplianceRefMissing = 72,
+    /// No schedule exists for the given (meter_id, circuit_id) (Issue #1001).
+    ScheduleNotFound = 73,
+    /// A `Schedule`'s days bitmask uses bits beyond the 7 valid days, or its
+    /// start/end minute-of-day is out of the 0..1440 range.
+    InvalidSchedule = 74,
+    /// An emergency override's `until` timestamp is not in the future.
+    InvalidOverrideWindow = 75,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
