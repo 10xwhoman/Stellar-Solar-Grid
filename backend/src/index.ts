@@ -68,6 +68,7 @@ import { consumptionAnalyticsRouter } from "./routes/consumptionAnalytics.js";
 import { recsRouter } from "./routes/recs.js";
 import { portfolioRouter } from "./routes/portfolio.js";
 import { vppRouter } from "./routes/vpp.js";
+import { gridServicesRouter } from "./routes/gridServices.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startResilienceMonitor } from "./lib/gridResilience.js";
@@ -241,6 +242,7 @@ app.use("/api/orderbook", orderBookRouter);
 app.use("/api/admin/dashboard", adminDashboardRouter);
 // #941: grid resilience scoring
 app.use("/api/grid", gridResilienceRouter);
+app.use("/api/grid-services", gridServicesRouter);
 startResilienceMonitor();
 // #939: energy data privacy controls
 app.use("/api/privacy", writeLimiter, privacyRouter);
