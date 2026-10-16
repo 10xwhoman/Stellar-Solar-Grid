@@ -1,7 +1,8 @@
 import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, contractInvoke, type MeterData } from "@/lib/contract";
+import { getMeterExports as fetchMeterExports, type GridExport } from "@/lib/api";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
-export type { MeterData };
+export type { MeterData, GridExport };
 
 export async function getMeter(meterId: string): Promise<MeterData> {
   return fetchMeter(meterId);
@@ -21,6 +22,14 @@ export async function getAllMeters(): Promise<MeterData[]> {
 
 export async function getMetersPaginated(offset: number, limit: number): Promise<string[]> {
   return fetchMetersPaginated(offset, limit);
+}
+
+export async function getMeterExports(
+  meterId: string,
+  page?: number,
+  pageSize?: number,
+): Promise<GridExport[]> {
+  return fetchMeterExports(meterId, page, pageSize);
 }
 
 export async function transferOwnership(

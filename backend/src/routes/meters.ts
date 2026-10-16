@@ -32,6 +32,10 @@ import {
   searchMetersByLocationIndex,
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
+import {
+  getGridExportHistory,
+  getGridExportTotals,
+} from "../lib/gridExports.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -280,6 +284,68 @@ export function createMeterRouter(stellar: StellarService) {
 
       res.json({ inactive: inactiveWithLastUsed, count: inactiveWithLastUsed.length });
     })
+  );
+
+  /**
+   * GET /api/meters/:meterId/exports — paginated grid export history with
+   * import/export totals (Issue #990).
+   *
+   * Registered BEFORE the generic /:id route so "exports" is never matched
+   * as a meter ID parameter.
+   */
+  meterRouter.get(
+    "/:meterId/exports",
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.meterId;
+
+      const rawPage = Number(req.query.page ?? 1);
+      const rawPageSize = Number(req.query.pageSize ?? 20);
+
+      if (!Number.isInteger(rawPage) || rawPage < 1) {
+        return res.status(400).json({ error: "page must be a positive integer", code: "VALIDATION_ERROR" });
+      }
+      if (!Number.isInteger(rawPageSize) || rawPageSize < 1 || rawPageSize > 100) {
+        return res.status(400).json({ error: "pageSize must be between 1 and 100", code: "VALIDATION_ERROR" });
+      }
+
+      // Validate the meter exists on-chain.
+      let meter: any;
+      try {
+        const result = await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+        meter = StellarSdk.scValToNative(result);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
+      }
+      if (!meter) {
+        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
+      }
+
+      const history = getGridExportHistory(meterId, rawPage, rawPageSize);
+      const totals = getGridExportTotals(meterId);
+
+      // Prefer on-chain totals when the contract exposes them.
+      let onChainTotals: any = null;
+      try {
+        const result = await stellar.query("get_export_totals", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+        onChainTotals = StellarSdk.scValToNative(result);
+      } catch {
+        onChainTotals = null;
+      }
+
+      return res.json({
+        meter_id: meterId,
+        exports: history.exports,
+        pagination: history.pagination,
+        totals: {
+          ...totals,
+          on_chain: onChainTotals,
+        },
+      });
+    }),
   );
 
   /** GET /api/meters/:id/status — lightweight status poll */

@@ -128,6 +128,8 @@ pub enum ContractError {
     InvalidRecQuantity = 71,
     /// A registry or attestation reference is required.
     ComplianceRefMissing = 72,
+    /// The admin-configurable grid export rate has not been set (Issue #990).
+    ExportRateNotSet = 73,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -180,6 +182,11 @@ const ADMIN_TRANSFER_TTL: u64 = 7 * SECONDS_PER_DAY;
 const MAX_METADATA_PAIRS: u32 = 10;
 /// Max characters per metadata value (Issue #691).
 const MAX_METADATA_VALUE_LEN: u32 = 100;
+/// Admin-configurable credit rate (stroops per kWh) paid for grid exports
+/// (Issue #990).
+const EXPORT_RATE: Symbol = symbol_short!("EXP_RATE");
+/// Maximum page size for `get_export_history` (Issue #990).
+const MAX_EXPORT_PAGE: u32 = 100;
 
 /// An announced emergency withdrawal can only be executed once this many
 /// seconds have elapsed since it was announced (#686).
@@ -303,6 +310,8 @@ pub struct Meter {
     ///     metadata (Issue #691)
     /// v5: adds max_capacity_watts — the meter's maximum energy capacity, used
     ///     for load-balancing decisions (Issue #821)
+    /// v8: adds import_kwh and export_kwh — bidirectional metering totals
+    ///     (Issue #990)
     pub version: u32,
     pub owner: Address,
     pub active: bool,
@@ -324,6 +333,10 @@ pub struct Meter {
     pub installed_at: u64,
     /// Maximum energy capacity in watts; zero means unknown.
     pub max_capacity_watts: u32,
+    /// Cumulative energy imported from the grid, in milli-kWh (Issue #990).
+    pub import_kwh: u64,
+    /// Cumulative energy exported to the grid, in milli-kWh (Issue #990).
+    pub export_kwh: u64,
 }
 /// v6 layout before capacity support, retained for migration.
 #[contracttype]
@@ -415,10 +428,10 @@ pub struct LegacyMeter {
     pub expires_at: u64,
 }
 
-/// Migrate a v0 (legacy) meter entry to the current v6 schema.
+/// Migrate a v0 (legacy) meter entry to the current v8 schema.
 fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
-        version: 7,
+        version: 8,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -433,13 +446,15 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         auto_deactivate: true,
         installed_at: old.last_payment,
         max_capacity_watts: 0,
+        import_kwh: 0,
+        export_kwh: 0,
     }
 }
 
-/// Migrate a v1 meter entry to the current v6 schema.
+/// Migrate a v1 meter entry to the current v8 schema.
 fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
     Meter {
-        version: 7,
+        version: 8,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -454,12 +469,14 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         auto_deactivate: true,
         installed_at: old.last_payment,
         max_capacity_watts: 0,
+        import_kwh: 0,
+        export_kwh: 0,
     }
 }
 
 fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
     Meter {
-        version: 7,
+        version: 8,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -474,11 +491,13 @@ fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
         auto_deactivate: true,
         installed_at: old.last_payment,
         max_capacity_watts: 0,
+        import_kwh: 0,
+        export_kwh: 0,
     }
 }
 
 fn migrate_meter_v5(old: LegacyMeterV5) -> Meter {
-    Meter { version: 7, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0 }
+    Meter { version: 8, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0 }
 }
 
 /// Returns the number of seconds a payment plan is valid for.
@@ -574,6 +593,10 @@ pub enum DataKey {
     ReferralCredit(Address),
     /// Referral statistics for a referrer (Issue #831).
     ReferralStats(Address),
+    /// Grid export history for a meter (Issue #990).
+    GridExportHistory(String),
+    /// Cumulative grid export credit paid to a meter (Issue #990).
+    GridExportCredit(String),
 }
 
 #[contracttype]
@@ -593,6 +616,17 @@ pub struct GroupStats { pub meter_count: u32, pub active_count: u32, pub total_u
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferralStats { pub referred_count: u32, pub total_credits: i128 }
+
+/// A single grid export credited to a meter (Issue #990).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridExport {
+    pub meter_id: String,
+    pub kwh: u64,
+    pub credit: i128,
+    pub rate: i128,
+    pub timestamp: u64,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -866,7 +900,7 @@ impl SolarGridContract {
         // ── EFFECTS — all state writes before any external observation ──────
         let now = env.ledger().timestamp();
         let meter = Meter {
-            version: 7,
+            version: 8,
             owner: owner.clone(),
             active: false,
             units_used: 0,
@@ -881,12 +915,14 @@ impl SolarGridContract {
             auto_deactivate: true,
             installed_at: now,
             max_capacity_watts: max_capacity_watts.unwrap_or(0),
+            import_kwh: 0,
+            export_kwh: 0,
         };
         env.storage().persistent().set(&key, &meter);
         if !meter_metadata.is_empty() {
             env.storage().persistent().set(&DataKey::MeterMetadata(meter_id.clone()), &meter_metadata);
         }
-        env.storage().persistent().set(&DataKey::MeterSchemaVer(meter_id.clone()), &7u32);
+        env.storage().persistent().set(&DataKey::MeterSchemaVer(meter_id.clone()), &8u32);
 
         // Append meter_id to the owner's meter list
         let owner_key = DataKey::OwnerMeters(owner.clone());
@@ -1044,7 +1080,7 @@ impl SolarGridContract {
             seen.push_back(meter_id.clone());
 
             let meter = Meter {
-                version: 7,
+                version: 8,
                 owner: owner.clone(),
                 active: false,
                 units_used: 0,
@@ -1059,11 +1095,13 @@ impl SolarGridContract {
                 auto_deactivate: true,
                 installed_at: now,
                 max_capacity_watts: 0,
+                import_kwh: 0,
+                export_kwh: 0,
             };
             env.storage().persistent().set(&key, &meter);
             env.storage()
                 .persistent()
-                .set(&DataKey::MeterSchemaVer(meter_id.clone()), &5u32);
+                .set(&DataKey::MeterSchemaVer(meter_id.clone()), &8u32);
 
             let owner_key = DataKey::OwnerMeters(owner.clone());
             let mut owner_list: Vec<String> = env
@@ -1800,7 +1838,7 @@ impl SolarGridContract {
         meter.last_payment = now;
         meter.expires_at = expires_at;
         meter.grace_expires_at = None;
-        meter.version = 6;
+        meter.version = 8;
         if meter.installed_at == 0 { meter.installed_at = now; }
         env.storage().persistent().set(&key, &meter);
 
@@ -2728,6 +2766,165 @@ impl SolarGridContract {
             .unwrap_or(DEFAULT_UNIT_PRICE)
     }
 
+    /// Set the admin-configurable grid export credit rate, in stroops per kWh
+    /// (Issue #990). Must be strictly positive; a zero or negative rate would
+    /// let exports be recorded without any compensation.
+    ///
+    /// Emits: `exp_rate { old, new }`.
+    pub fn set_export_rate(env: Env, rate: i128) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "set_export_rate", "contract")?;
+        if rate <= 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        let old: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
+        env.storage().instance().set(&EXPORT_RATE, &rate);
+        env.events()
+            .publish((EVT_NS, symbol_short!("exp_rate")), (old, rate));
+        Ok(())
+    }
+
+    /// Return the configured grid export credit rate (stroops per kWh), or 0
+    /// when the admin has not configured one yet (Issue #990).
+    pub fn get_export_rate(env: Env) -> i128 {
+        env.storage().instance().get(&EXPORT_RATE).unwrap_or(0)
+    }
+
+    /// Record a grid export for a meter and credit its owner (Issue #990).
+    ///
+    /// `kwh` is the exported energy in milli-kWh. The credit is computed as
+    /// `kwh * export_rate` and added to the meter's prepaid balance, so the
+    /// owner can consume it later or withdraw it via the normal refund path.
+    ///
+    /// # Access control
+    /// The registered oracle (or the admin) must authorize the call.
+    ///
+    /// # Guards
+    /// - `kwh` must be > 0.
+    /// - The meter must exist.
+    /// - An export rate must have been configured via [`Self::set_export_rate`].
+    ///
+    /// SECURITY: Follows checks-effects-interactions ordering and holds the
+    /// reentrancy lock for the whole body.
+    ///
+    /// Emits: `GridExport` with topics `(EVT_NS, grid_exp, meter_id)` and data
+    /// `(kwh, credit, rate, timestamp)`.
+    pub fn record_grid_export(
+        env: Env,
+        meter_id: String,
+        kwh: u64,
+    ) -> Result<i128, ContractError> {
+        // ── CHECKS ──────────────────────────────────────────────────────────
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if kwh == 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let oracle: Option<Address> = env.storage().instance().get(&ORACLE);
+        let admin = Self::get_admin(&env)?;
+        match oracle {
+            Some(o) => o.require_auth(),
+            None => admin.require_auth(),
+        }
+
+        let rate: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
+        if rate <= 0 {
+            return Err(ContractError::ExportRateNotSet);
+        }
+
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
+        let now = env.ledger().timestamp();
+        let credit = i128::from(kwh).saturating_mul(rate);
+
+        meter.export_kwh = meter.export_kwh.saturating_add(kwh);
+        env.storage().persistent().set(&key, &meter);
+
+        // Credit the meter owner's prepaid balance.
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&bal_key, &balance.saturating_add(credit));
+
+        // Track cumulative export credit for the meter.
+        let credit_key = DataKey::GridExportCredit(meter_id.clone());
+        let total_credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&credit_key, &total_credit.saturating_add(credit));
+
+        // Append to the meter's export history.
+        let history_key = DataKey::GridExportHistory(meter_id.clone());
+        let mut history: Vec<GridExport> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| vec![&env]);
+        history.push_back(GridExport {
+            meter_id: meter_id.clone(),
+            kwh,
+            credit,
+            rate,
+            timestamp: now,
+        });
+        env.storage().persistent().set(&history_key, &history);
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        env.events().publish(
+            (EVT_NS, symbol_short!("grid_exp"), meter_id),
+            (kwh, credit, rate, now),
+        );
+        Ok(credit)
+    }
+
+    /// Paginated grid export history for a meter (Issue #990). `limit` is
+    /// capped at [`MAX_EXPORT_PAGE`].
+    pub fn get_export_history(
+        env: Env,
+        meter_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<GridExport>, ContractError> {
+        Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        let limit = limit.min(MAX_EXPORT_PAGE);
+        let history: Vec<GridExport> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GridExportHistory(meter_id))
+            .unwrap_or_else(|| vec![&env]);
+        let total = history.len();
+        if offset >= total {
+            return Ok(vec![&env]);
+        }
+        let end = (offset + limit).min(total);
+        let mut page: Vec<GridExport> = vec![&env];
+        for i in offset..end {
+            if let Some(entry) = history.get(i) {
+                page.push_back(entry);
+            }
+        }
+        Ok(page)
+    }
+
+    /// Return `(import_kwh, export_kwh)` totals for a meter (Issue #990).
+    pub fn get_export_totals(env: Env, meter_id: String) -> Result<(u64, u64), ContractError> {
+        let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?;
+        Ok((meter.import_kwh, meter.export_kwh))
+    }
+
+    /// Cumulative grid export credit paid to a meter (Issue #990).
+    pub fn get_export_credit(env: Env, meter_id: String) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GridExportCredit(meter_id))
+            .unwrap_or(0)
+    }
+
     /// Store validated weekday/weekend windows. All timestamps are interpreted as UTC.
     pub fn set_pricing_schedule(env: Env, schedule: PricingSchedule) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "set_pricing_schedule", "contract")?;
@@ -3641,7 +3838,7 @@ impl SolarGridContract {
         } else if legacy_metadata {
             let old = LegacyMeterV4::try_from_val(env, &raw).map_err(decode_err)?;
             let metadata = old.metadata.clone();
-            let meter = Meter { version: 7, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0 };
+            let meter = Meter { version: 8, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0 };
             if let DataKey::Meter(meter_id) = key {
                 env.storage().persistent().set(&DataKey::MeterMetadata(meter_id.clone()), &metadata);
             }
@@ -3674,7 +3871,7 @@ impl SolarGridContract {
         Self::require_admin(&env)?;
         if installed_at > env.ledger().timestamp() { return Err(ContractError::InvalidInstallationDate); }
         let key = DataKey::Meter(meter_id.clone()); let mut meter = Self::get_meter_or_error(&env, &key)?;
-        meter.installed_at = installed_at; meter.version = 6; env.storage().persistent().set(&key, &meter);
+        meter.installed_at = installed_at; meter.version = 8; env.storage().persistent().set(&key, &meter);
         env.events().publish((EVT_NS, symbol_short!("inst_date"), meter_id), installed_at); Ok(())
     }
     pub fn get_installed_at(env: Env, meter_id: String) -> Result<u64, ContractError> { Ok(Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?.installed_at) }
@@ -3833,6 +4030,7 @@ impl SolarGridContract {
         let new_balance = balance.saturating_sub(cost).max(0);
         env.storage().persistent().set(&bal_key, &new_balance);
         meter.units_used = meter.units_used.saturating_add(units);
+        meter.import_kwh = meter.import_kwh.saturating_add(units);
 
         let deactivated;
         let mut deactivation_reason: Option<Symbol> = None;
@@ -5786,7 +5984,7 @@ mod tests {
 
         // The entry should now deserialize as a current-schema Meter.
         let meter = client.get_meter(&meter_id);
-        assert_eq!(meter.version, 7);
+        assert_eq!(meter.version, 8);
         assert_eq!(meter.installed_at, 1_000);
         assert_eq!(meter.owner, owner);
         assert!(meter.active);
@@ -5806,12 +6004,12 @@ mod tests {
         // Register creates a current-schema meter.
         allowlist_and_register(&client, meter_id.clone(), &user);
         let before = client.get_meter(&meter_id);
-        assert_eq!(before.version, 7);
+        assert_eq!(before.version, 8);
 
         // Calling migrate_meter again must succeed and leave the entry unchanged.
         client.migrate_meter(&meter_id);
         let after = client.get_meter(&meter_id);
-        assert_eq!(after.version, 7);
+        assert_eq!(after.version, 8);
         assert_eq!(after.owner, before.owner);
         assert_eq!(after.units_used, before.units_used);
     }
@@ -5827,7 +6025,7 @@ mod tests {
         client.register_meter_with_capacity(&meter_id, &user, &5_000_u32);
 
         let meter = client.get_meter(&meter_id);
-        assert_eq!(meter.version, 7);
+        assert_eq!(meter.version, 8);
         assert_eq!(meter.max_capacity_watts, 5_000);
     }
 
@@ -5840,7 +6038,7 @@ mod tests {
         client.register_meter(&meter_id, &user);
 
         let meter = client.get_meter(&meter_id);
-        assert_eq!(meter.version, 7);
+        assert_eq!(meter.version, 8);
         assert_eq!(meter.max_capacity_watts, 0);
     }
 
@@ -5890,7 +6088,7 @@ mod tests {
         client.migrate_meter_v4(&meter_id);
 
         let meter = client.get_meter(&meter_id);
-        assert_eq!(meter.version, 7);
+        assert_eq!(meter.version, 8);
         assert_eq!(meter.owner, owner);
         assert!(meter.active);
         assert_eq!(meter.units_used, 7);
@@ -5907,7 +6105,7 @@ mod tests {
 
         client.migrate_meter_v4(&meter_id);
         let meter = client.get_meter(&meter_id);
-        assert_eq!(meter.version, 7);
+        assert_eq!(meter.version, 8);
         assert_eq!(meter.max_capacity_watts, 1_500);
     }
 
@@ -7537,6 +7735,177 @@ mod tests {
             results.get(4).unwrap().error,
             Some(String::from_str(&env, "duplicate_in_batch"))
         );
+    }
+
+    // ── Issue #990: grid export credit system ────────────────────────────────
+
+    #[test]
+    fn test_set_export_rate_rejects_non_positive() {
+        let (_env, client, _admin) = setup();
+        assert_eq!(
+            client.try_set_export_rate(&0_i128),
+            Err(Ok(ContractError::InvalidConfiguration))
+        );
+        assert_eq!(
+            client.try_set_export_rate(&-1_i128),
+            Err(Ok(ContractError::InvalidConfiguration))
+        );
+        assert_eq!(client.get_export_rate(), 0);
+    }
+
+    #[test]
+    fn test_set_export_rate_updates_value() {
+        let (_env, client, _admin) = setup();
+        client.set_export_rate(&500_i128);
+        assert_eq!(client.get_export_rate(), 500);
+    }
+
+    #[test]
+    fn test_record_grid_export_credits_owner_and_tracks_totals() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let oracle = setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EXP_M1");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+
+        client.set_export_rate(&100_i128);
+        let credit = client.record_grid_export(&meter_id, &5_u64);
+        assert_eq!(credit, 500);
+
+        assert_eq!(client.get_meter_balance(&meter_id), 500);
+        assert_eq!(client.get_export_credit(&meter_id), 500);
+
+        let (import_kwh, export_kwh) = client.get_export_totals(&meter_id);
+        assert_eq!(import_kwh, 0);
+        assert_eq!(export_kwh, 5);
+
+        let history = client.get_export_history(&meter_id, &0, &10);
+        assert_eq!(history.len(), 1);
+        let entry = history.get(0).unwrap();
+        assert_eq!(entry.kwh, 5);
+        assert_eq!(entry.credit, 500);
+        assert_eq!(entry.rate, 100);
+        assert_eq!(entry.meter_id, meter_id);
+
+        // The oracle authorized the call; the admin address is unused here.
+        let _ = oracle;
+        let _ = token_address;
+    }
+
+    #[test]
+    fn test_record_grid_export_emits_grid_exp_event() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EXP_EVT");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        client.set_export_rate(&250_i128);
+
+        client.record_grid_export(&meter_id, &4_u64);
+
+        let events = env.events().all();
+        let found = events_as_tuples(&env, &events).iter().any(|(_, topics, _)| {
+            topics.len() >= 3
+                && sym_eq(&env, &topics.get(0).unwrap(), EVT_NS)
+                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("grid_exp"))
+                && topics
+                    .get(2)
+                    .map(|v| String::try_from_val(&env, &v).ok() == Some(meter_id.clone()))
+                    .unwrap_or(false)
+        });
+        assert!(found, "grid_exp event not emitted");
+    }
+
+    #[test]
+    fn test_record_grid_export_rejects_zero_kwh() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EXP_ZERO");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        client.set_export_rate(&100_i128);
+
+        assert_eq!(
+            client.try_record_grid_export(&meter_id, &0_u64),
+            Err(Ok(ContractError::InvalidAmount))
+        );
+    }
+
+    #[test]
+    fn test_record_grid_export_requires_rate() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EXP_NORATE");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+
+        assert_eq!(
+            client.try_record_grid_export(&meter_id, &1_u64),
+            Err(Ok(ContractError::ExportRateNotSet))
+        );
+    }
+
+    #[test]
+    fn test_record_grid_export_unknown_meter() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        client.set_export_rate(&100_i128);
+        let meter_id = String::from_str(&env, "EXP_MISSING");
+        assert_eq!(
+            client.try_record_grid_export(&meter_id, &1_u64),
+            Err(Ok(ContractError::MeterNotFound))
+        );
+    }
+
+    #[test]
+    fn test_get_export_history_pagination_and_cap() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EXP_PAGE");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        client.set_export_rate(&10_i128);
+
+        for _ in 0..5 {
+            client.record_grid_export(&meter_id, &1_u64);
+        }
+
+        let page = client.get_export_history(&meter_id, &1, &2);
+        assert_eq!(page.len(), 2);
+
+        // Offset beyond the end returns an empty page.
+        let empty = client.get_export_history(&meter_id, &99, &10);
+        assert_eq!(empty.len(), 0);
+
+        // Limit is capped at MAX_EXPORT_PAGE.
+        let capped = client.get_export_history(&meter_id, &0, &1_000);
+        assert_eq!(capped.len(), 5);
+    }
+
+    #[test]
+    fn test_import_and_export_tracked_separately() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EXP_BIDIR");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
+
+        client.update_usage(&meter_id, &7_u64, &1_000_i128);
+        client.set_export_rate(&100_i128);
+        client.record_grid_export(&meter_id, &3_u64);
+
+        let (import_kwh, export_kwh) = client.get_export_totals(&meter_id);
+        assert_eq!(import_kwh, 7);
+        assert_eq!(export_kwh, 3);
     }
 
     #[test]

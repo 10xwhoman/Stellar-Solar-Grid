@@ -678,6 +678,66 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/meters/{meterId}/exports:
+    get:
+      summary: Grid export history for a meter (Issue #990)
+      description: |
+        Returns paginated grid export records for a meter, including the kWh
+        exported, the credit earned, the applied export rate, and the on-chain
+        settlement transaction hash.  Also returns import/export totals for the
+        meter so the frontend can render an import/export breakdown.
+      operationId: getMeterExports
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: Page number (1-based)
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: Exports per page (default 20, max 100)
+      responses:
+        "200":
+          description: Paginated grid export history with import/export totals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [exports, page, pageSize, total, hasMore, totals]
+                properties:
+                  exports:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, meter_id, kwh, credit, rate, received_at, on_chain_tx_hash]
+                      properties:
+                        id: { type: integer }
+                        meter_id: { type: string }
+                        kwh: { type: number, description: Energy exported to the grid in kWh }
+                        credit: { type: string, description: Credit earned in stroops (decimal string) }
+                        rate: { type: string, description: Export rate applied, in stroops per kWh }
+                        received_at: { type: string, format: date-time }
+                        on_chain_tx_hash: { type: string, nullable: true }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  hasMore: { type: boolean }
+                  totals:
+                    type: object
+                    required: [importKwh, exportKwh, exportCredit]
+                    properties:
+                      importKwh: { type: number, description: Total energy imported by the meter in kWh }
+                      exportKwh: { type: number, description: Total energy exported by the meter in kWh }
+                      exportCredit: { type: string, description: Total export credit earned in stroops (decimal string) }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/meters/{id}/history:
     get:
       summary: Paginated local usage history for a meter

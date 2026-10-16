@@ -15,6 +15,7 @@ import { logger } from "../lib/logger.js";
 import {
   persistAndSubmitUsageEvent,
   insertSubmittedUsageEvents,
+  recordGridExport,
   getKV,
   setKV,
   getTypicalWeeklyUsageStroops,
@@ -164,6 +165,70 @@ interface Reading {
    * timestamp/counter when present; otherwise fall back to arrival time. */
   timestamp: number;
   sequence?: number;
+}
+
+/**
+ * Issue #990: a bidirectional meter reports grid import and export
+ * separately. A reading is treated as an export when it carries an explicit
+ * `direction`/`export` marker, or when its `units` are negative (a negative
+ * cumulative delta means the meter pushed energy back to the grid).
+ */
+function isGridExportReading(raw: Record<string, unknown>, units: number): boolean {
+  const direction = raw.direction;
+  if (typeof direction === "string") {
+    const normalised = direction.toLowerCase();
+    if (normalised === "export" || normalised === "out") return true;
+    if (normalised === "import" || normalised === "in") return false;
+  }
+  if (raw.export === true) return true;
+  if (raw.export === false) return false;
+  return units < 0;
+}
+
+/**
+ * Issue #990: submit a grid export reading to the contract's
+ * `record_grid_export` entry point and persist it locally so the export
+ * history endpoint can serve it. Returns the on-chain tx hash when the
+ * submission succeeded.
+ */
+async function submitGridExport(
+  meterId: string,
+  units: number,
+  cost: number,
+  sourceTopic: string,
+): Promise<string | null> {
+  const exportUnits = Math.abs(units);
+  let txHash: string | null = null;
+  try {
+    txHash = await adminInvoke("record_grid_export", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+      StellarSdk.nativeToScVal(BigInt(exportUnits), { type: "u64" }),
+      StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
+    ]);
+    logger.info("Grid export recorded on-chain", {
+      event: "grid_export_recorded",
+      meterId,
+      units: exportUnits,
+      cost,
+      txHash,
+    });
+  } catch (err) {
+    logger.error("Grid export submission error", { meterId, units: exportUnits, err });
+  }
+
+  try {
+    recordGridExport({
+      meterId,
+      units: exportUnits,
+      cost,
+      sourceTopic,
+      onChainTxHash: txHash,
+    });
+  } catch (err) {
+    logger.error("Failed to persist grid export to local DB", { meterId, err });
+  }
+
+  return txHash;
 }
 
 /**
@@ -390,6 +455,17 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
 
   const { units, cost } = parsed.data;
 
+  if (isGridExportReading(raw as Record<string, unknown>, units)) {
+    logger.info("Grid export received from IoT bridge", {
+      event: "grid_export_received",
+      meterId,
+      units,
+      cost,
+    });
+    await submitGridExport(meterId, units, cost, topic);
+    return;
+  }
+
   logger.info("Usage update received from IoT bridge", {
     meterId,
     units,
@@ -556,6 +632,21 @@ function startMqttBridge() {
         return;
       }
       const { units, cost, timestamp, sequence } = parsed.data;
+
+      // Issue #990: bidirectional meters report exports separately — route
+      // them to record_grid_export instead of the import/usage path.
+      if (isGridExportReading(raw as Record<string, unknown>, units)) {
+        logger.info("Grid export received from IoT bridge", {
+          event: "grid_export_received",
+          meterId,
+          units,
+          cost,
+          timestamp,
+          sequence,
+        });
+        await submitGridExport(meterId, units, cost, topic);
+        return;
+      }
 
       logger.info("Usage update received from IoT bridge", {
         meterId,

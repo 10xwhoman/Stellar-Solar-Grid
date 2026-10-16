@@ -265,6 +265,75 @@ Events (`solar`, …): `stk_cfg`, `stk_fund`, `staked`, `unstk_req`, `unstaked`,
 New errors: `StakingNotConfigured` (38), `InsufficientStake` (39),
 `NoPendingUnstake` (40), `CooldownNotElapsed` (41).
 
+## Grid Export Credit System (#990)
+
+Meters track grid import and export separately, and users are credited for
+excess solar exported to the grid.
+
+### Bidirectional metering
+
+The `Meter` struct carries two independent counters:
+
+| Field | Type | Description |
+|---|---|---|
+| `import_kwh` | `u64` | Cumulative energy drawn from the grid |
+| `export_kwh` | `u64` | Cumulative energy exported to the grid |
+
+`import_kwh` is incremented by `apply_usage`/`batch_update_usage`; `export_kwh`
+is incremented by `record_grid_export`. The two counters never offset each
+other, so the frontend can render a true import/export breakdown.
+
+### Configurable export rate
+
+The admin sets the credit paid per exported kWh:
+
+- `set_export_rate(rate: i128)` — admin-only; `rate` is the credit (in the
+  contract's token units) paid per kWh exported. Emits `exp_rate`.
+- `get_export_rate() -> i128` — returns the current rate (0 if unset).
+
+### `record_grid_export(meter_id: String, kwh: u64)`
+
+Records `kwh` exported by `meter_id` and credits the meter owner:
+
+1. Requires the meter to exist and not be decommissioned.
+2. `credit = kwh as i128 * export_rate`.
+3. Adds `kwh` to the meter's `export_kwh` counter and `credit` to the owner's
+   balance.
+4. Appends an entry to the meter's export history and updates the export totals.
+5. Emits `GridExport`.
+
+### `GridExport` event
+
+- **Topic 0:** `solargrid` (EVT_NS)
+- **Topic 1:** `grid_exp` (symbol_short)
+- **Topic 2:** `meter_id` (String)
+- **Data:** `(kwh: u64, credit: i128, rate: i128, timestamp: u64)`
+
+### Read functions
+
+- `get_export_history(meter_id: String, offset: u32, limit: u32) -> Vec<GridExportRecord>`
+  — paginated export history for a meter (`limit` capped at 100). Each record
+  holds `kwh`, `credit`, `rate`, and `timestamp`.
+- `get_export_totals(meter_id: String) -> (u64, i128)` — returns
+  `(total_export_kwh, total_credit)` for the meter.
+
+The backend exposes the same history via `GET /api/meters/:meterId/exports`.
+
+### New error
+
+- `ExportRateNotSet` (54) — returned by `record_grid_export` when no export
+  rate has been configured.
+
+### Tests
+
+- `test_record_grid_export_credits_owner`
+- `test_record_grid_export_updates_totals_and_history`
+- `test_record_grid_export_emits_event`
+- `test_record_grid_export_requires_rate`
+- `test_set_and_get_export_rate`
+- `test_get_export_history_pagination`
+- `test_import_and_export_counters_are_separate`
+
 ## Energy Export Certificates (#871)
 
 Non-fungible certificates attesting that a meter exported renewable energy to
