@@ -10,6 +10,8 @@
 
 import { handleHeartbeatMessage } from "../lib/meterHealth.js";
 import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
+import { handleBatteryTelemetry } from "../lib/battery.js";
+import { handleFirmwareStatusMessage } from "../lib/firmware.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -551,6 +553,22 @@ function startMqttBridge() {
     mqttMessages.inc({ topic: labelTopic });
     if (segments[3] === "heartbeat") {
       handleHeartbeatMessage(segments[2], payload);
+      return;
+    }
+    if (segments[3] === "battery") {
+      try {
+        handleBatteryTelemetry(segments[2], payload);
+      } catch (err) {
+        logger.error("Battery telemetry handling failed", { topic, err });
+      }
+      return;
+    }
+    if (segments[3] === "firmware") {
+      try {
+        await handleFirmwareStatusMessage(segments[2], payload);
+      } catch (err) {
+        logger.error("Firmware status handling failed", { topic, err });
+      }
       return;
     }
     if (handleDeviceTelemetryTopic(topic, payload)) return;

@@ -10,6 +10,7 @@
 import { Router } from "express";
 import {
   generateWeekly,
+  listRecommendations,
   respond,
   savingsSummary,
   subscribe,
@@ -18,7 +19,8 @@ import {
 export const recommendationsRouter = Router();
 
 recommendationsRouter.get("/:meterId", (req, res) => {
-  res.json({ recommendations: generateWeekly(req.params.meterId) });
+  const recommendations = listRecommendations(req.params.meterId);
+  res.json({ recommendations });
 });
 
 recommendationsRouter.get("/:meterId/savings", (req, res) => {

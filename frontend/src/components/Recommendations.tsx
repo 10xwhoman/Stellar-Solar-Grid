@@ -11,10 +11,25 @@ interface Recommendation {
   id: number;
   kind: string;
   message: string;
+  priority: "high" | "medium" | "low";
   estimatedWeeklySavingKwh: number;
+  estimatedWeeklySavingCost: number;
   status: "pending" | "accepted" | "dismissed";
   actualWeeklySavingKwh: number | null;
+  actualWeeklySavingCost: number | null;
 }
+
+const PRIORITY_ORDER: Record<Recommendation["priority"], number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
+const PRIORITY_STYLES: Record<Recommendation["priority"], string> = {
+  high: "bg-red-500/20 text-red-300",
+  medium: "bg-amber-500/20 text-amber-300",
+  low: "bg-sky-500/20 text-sky-300",
+};
 
 interface Savings {
   acceptedCount: number;
@@ -56,7 +71,9 @@ export default function Recommendations({ meterId, ownerAddress }: { meterId: st
     if (res.ok) void load();
   }
 
-  const pending = recs.filter((r) => r.status === "pending");
+  const pending = recs
+    .filter((r) => r.status === "pending")
+    .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
 
   return (
     <section className="space-y-3 rounded-xl bg-white/5 p-4" aria-labelledby="recs-title">
@@ -67,9 +84,22 @@ export default function Recommendations({ meterId, ownerAddress }: { meterId: st
         <ul className="space-y-2">
           {pending.map((r) => (
             <li key={r.id} className="rounded-lg border border-white/10 p-3">
-              <p>{r.message}</p>
+              <div className="flex items-start justify-between gap-2">
+                <p>{r.message}</p>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${PRIORITY_STYLES[r.priority]}`}
+                >
+                  {t(`priority.${r.priority}`)}
+                </span>
+              </div>
               <p className="mt-1 text-sm opacity-70">
                 {t("estimated", { kwh: formatNumber(r.estimatedWeeklySavingKwh) })}
+              </p>
+              <p className="text-sm font-medium text-green-400">
+                {t("potentialSavings", {
+                  kwh: formatNumber(r.estimatedWeeklySavingKwh),
+                  cost: formatCurrency(r.estimatedWeeklySavingCost),
+                })}
               </p>
               <div className="mt-2 flex gap-2">
                 <button onClick={() => respond(r.id, "accept")} className="rounded bg-green-600 px-3 py-1 text-sm">
@@ -84,17 +114,22 @@ export default function Recommendations({ meterId, ownerAddress }: { meterId: st
         </ul>
       )}
       {savings && savings.acceptedCount > 0 && (
-        <div className="grid grid-cols-2 gap-2 text-sm">
-          <div>
-            <div className="opacity-70">{t("estimatedSavings")}</div>
-            <div className="font-semibold">
-              {formatNumber(savings.estimatedWeeklySavingKwh)} kWh · {formatCurrency(savings.estimatedWeeklySavingCost)}
-            </div>
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">
+            {t("adopted", { count: formatNumber(savings.acceptedCount) })}
           </div>
-          <div>
-            <div className="opacity-70">{t("actualSavings")}</div>
-            <div className="font-semibold">
-              {formatNumber(savings.actualWeeklySavingKwh)} kWh · {formatCurrency(savings.actualWeeklySavingCost)}
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <div className="opacity-70">{t("estimatedSavings")}</div>
+              <div className="font-semibold">
+                {formatNumber(savings.estimatedWeeklySavingKwh)} kWh · {formatCurrency(savings.estimatedWeeklySavingCost)}
+              </div>
+            </div>
+            <div>
+              <div className="opacity-70">{t("actualSavings")}</div>
+              <div className="font-semibold">
+                {formatNumber(savings.actualWeeklySavingKwh)} kWh · {formatCurrency(savings.actualWeeklySavingCost)}
+              </div>
             </div>
           </div>
         </div>
