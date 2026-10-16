@@ -53,10 +53,13 @@ Endpoints:
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
 
-## Customer support chatbot (#1021)
+## Grid stability and meter geofencing (#1016/#1017)
 
-`POST /api/chatbot/messages` accepts `{ message, conversationId?, language? }` for `en`, `es`, `fr`, `de`, `sw`, `zh`, and `ar`. The assistant answers balance, usage, payment, and troubleshooting FAQ topics from documented references. Low-confidence and sensitive requests are escalated rather than guessed. `GET /api/chatbot/metrics` (admin key) exposes conversations, messages, answer rate, escalation count, and escalation rate.
+Frequency telemetry can be published by meters on `solargrid/meters/{meterId}/frequency` with `{ "frequencyHz": 49.8, "loadKw": 2.4 }`. The bridge applies the 50 Hz threshold response and sends a relay command without routing the message through billing. HTTP equivalents are `POST /api/grid-services/frequency/readings`, `POST /api/grid-services/frequency/contributions`, and `GET /api/grid-services/frequency/:meterId/summary`.
 
-## Compliance reporting (#1022)
+GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/meters/{meterId}/location`. The backend compares the report with the registered haversine geofence and records a `LocationVerificationFailed` result when it is outside the permitted radius. Out-of-fence meters are automatically disabled for fraud review.
 
-`GET /api/reports/compliance?format=json|csv|pdf&framework=GSE|I-REC|EU-RED|FERC&period=monthly|quarterly` aggregates customer count, distributed energy, revenue, and subsidies. CSV and PDF downloads include a SHA-256 signature of the report payload. `GET /api/reports/compliance/schedules` describes monthly and quarterly schedules consumed by a deployment scheduler. Configure `COMPLIANCE_SIGNING_SECRET` in production; the development fallback is for local testing only.
+- `POST /api/grid-services/geofences` — register the expected location and radius
+- `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
+- `GET /api/grid-services/geofences/:meterId` — status and verification history
+- `GET /api/grid-services/geofences` — data for the frontend map
