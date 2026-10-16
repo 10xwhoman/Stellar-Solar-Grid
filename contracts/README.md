@@ -406,3 +406,21 @@ period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
 
 New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
 `CertificatePeriodOverlap` (52), `CertificateRetired` (53).
+
+## Energy credit gifting and subscription boxes (Issues #1018 and #1019)
+
+`gift_energy_credit(sender_meter_id, recipient_meter_id, amount, message)` moves
+prepaid credits between registered meters after the sender owner authorizes. It
+rejects non-positive amounts, insufficient balances, unknown meters, and overly
+long messages. It emits `EnergyGifted(sender, recipient, amount)` and
+`get_gift_history(owner)` exposes the sender's history.
+
+Subscription boxes are configured with
+`create_subscription_tier(name, price, included_kwh, rollover_limit)`. Users
+enroll with `subscribe(owner, tier_id)` and can use
+`upgrade_subscription`, `downgrade_subscription`, and `renew_subscription`.
+Renewal deducts the tier price from the owner's first registered meter balance,
+adds the included kWh, and carries unused kWh forward up to the tier's
+`rollover_limit`. `SubscriptionRenewed(owner, tier_id, price)` is emitted for
+enrollment, changes, and monthly renewal. `consume_subscription_kwh` is the
+usage-accounting hook used by the billing integration.

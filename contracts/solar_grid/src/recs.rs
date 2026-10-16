@@ -52,6 +52,7 @@ enum RecKey {
     Trade(u32),
     /// Rolling price-discovery inputs for one REC id, so reads are O(1).
     Index(u32),
+    Retired(u32),
 }
 
 #[contracttype]
@@ -279,6 +280,10 @@ impl SolarGridContract {
     pub fn get_rec_config(env: Env) -> Result<RecConfig, ContractError> {
         load_config(&env)
     }
+    /// Registry-facing name for issuing one REC per MWh of certified production.
+    pub fn mint_rec(env: Env, producer: Address, meter_id: String, kwh_generated: i128, vintage: u32, registry_ref: String) -> Result<u32, ContractError> {
+        Self::issue_rec(env, producer, meter_id, kwh_generated, vintage, registry_ref)
+    }
 
     /// Admin (the registry): issue RECs backed by `kwh_generated` generation.
     ///
@@ -375,6 +380,30 @@ impl SolarGridContract {
         );
         Ok(())
     }
+
+    /// Transfer REC units directly between holders (for bilateral trading).
+    pub fn transfer_rec(env: Env, from: Address, to: Address, rec_id: u32, units: i128) -> Result<(), ContractError> {
+        from.require_auth();
+        let rec = load_rec(&env, rec_id)?;
+        require_tradable(&rec)?;
+        if env.storage().persistent().get::<RecKey, bool>(&RecKey::Retired(rec_id)).unwrap_or(false) { return Err(ContractError::CertificateRetired); }
+        transfer_units(&env, rec_id, &from, &to, units)?;
+        env.events().publish((symbol_short!("solar"), symbol_short!("rec_xfer"), rec_id), (from, to, units));
+        Ok(())
+    }
+    /// Retire REC units so they cannot be transferred or counted again.
+    pub fn retire_rec(env: Env, holder: Address, rec_id: u32, units: i128) -> Result<(), ContractError> {
+        holder.require_auth();
+        let rec = load_rec(&env, rec_id)?;
+        require_tradable(&rec)?;
+        if units <= 0 || units > balance_of(&env, rec_id, &holder) { return Err(ContractError::InsufficientBalance); }
+        let retired = env.storage().persistent().get::<RecKey, i128>(&RecKey::Retired(rec_id)).unwrap_or(0);
+        set_balance(&env, rec_id, &holder, balance_of(&env, rec_id, &holder) - units);
+        env.storage().persistent().set(&RecKey::Retired(rec_id), &(retired + units));
+        env.events().publish((symbol_short!("solar"), symbol_short!("rec_ret"), rec_id), (holder, units));
+        Ok(())
+    }
+    pub fn retired_rec_units(env: Env, rec_id: u32) -> i128 { env.storage().persistent().get(&RecKey::Retired(rec_id)).unwrap_or(0) }
 
     /// Producer: post a sell order for up to `units` of `rec_id`.
     pub fn list_recs(
