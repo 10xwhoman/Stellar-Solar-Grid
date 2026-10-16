@@ -52,3 +52,11 @@ Endpoints:
 - `POST /api/meters/:meterId/heartbeat` — record a heartbeat over HTTP
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
+
+## Customer support chatbot (#1021)
+
+`POST /api/chatbot/messages` accepts `{ message, conversationId?, language? }` for `en`, `es`, `fr`, `de`, `sw`, `zh`, and `ar`. The assistant answers balance, usage, payment, and troubleshooting FAQ topics from documented references. Low-confidence and sensitive requests are escalated rather than guessed. `GET /api/chatbot/metrics` (admin key) exposes conversations, messages, answer rate, escalation count, and escalation rate.
+
+## Compliance reporting (#1022)
+
+`GET /api/reports/compliance?format=json|csv|pdf&framework=GSE|I-REC|EU-RED|FERC&period=monthly|quarterly` aggregates customer count, distributed energy, revenue, and subsidies. CSV and PDF downloads include a SHA-256 signature of the report payload. `GET /api/reports/compliance/schedules` describes monthly and quarterly schedules consumed by a deployment scheduler. Configure `COMPLIANCE_SIGNING_SECRET` in production; the development fallback is for local testing only.

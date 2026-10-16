@@ -9,6 +9,7 @@ use soroban_sdk::{
 
 mod certificates;
 mod multi_asset;
+mod leases;
 mod recs;
 mod staking;
 mod warranty;
@@ -16,6 +17,7 @@ mod warranty;
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
+pub use leases::{LeaseAgreement, LeaseStatus};
 pub use recs::{
     RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
     RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
@@ -128,6 +130,8 @@ pub enum ContractError {
     InvalidRecQuantity = 71,
     /// A registry or attestation reference is required.
     ComplianceRefMissing = 72,
+    /// No lease agreement exists with the supplied id.
+    LeaseNotFound = 73,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────

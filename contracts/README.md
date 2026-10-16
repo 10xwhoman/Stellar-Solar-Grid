@@ -296,3 +296,13 @@ period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
 
 New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
 `CertificatePeriodOverlap` (52), `CertificateRetired` (53).
+
+## Renewable Energy Certificates and meter leases
+
+### REC lifecycle (#1015)
+
+The REC module records one internal REC unit for each **1 MWh (1,000 kWh)** of verified solar generation. The registry calls `mint_rec(producer, meter_id, kwh_generated, vintage, registry_ref)`, the configured compliance authority calls `verify_rec`, and holders can use `transfer_rec(from, to, rec_id, units)` for bilateral transfers. `list_recs`, `place_bid`, and `execute_trade` provide the marketplace order book. A holder calls `retire_rec(holder, rec_id, units)` to permanently remove units from circulation; retirement emits `rec_ret` and `retired_rec_units` exposes the aggregate retired quantity. Pending or rejected credits cannot trade. Registry and compliance references are retained with each REC for auditability.
+
+### Meter rental / lease-to-own (#1020)
+
+`start_lease(meter_id, owner, lessee, monthly_payment, total_payments, buyout_amount)` stores a bounded agreement. The lessee authorizes `make_lease_payment`; the contract emits `lease_pmt` for each instalment and `lease_done` on the final payment. `buyout_lease` completes an agreement early at the agreed buyout amount and records the lessee as the new owner. `get_lease` returns `LeaseAgreement`, including `payments_made`, `total_payments`, status, and timestamps.
