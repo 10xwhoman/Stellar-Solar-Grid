@@ -8,6 +8,7 @@ use soroban_sdk::{
 };
 
 mod certificates;
+mod insurance;
 mod multi_asset;
 mod recs;
 mod staking;
@@ -15,6 +16,7 @@ mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
+pub use insurance::{ClaimStatus, InsuranceClaim, InsurancePolicy};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
 pub use recs::{
     RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
@@ -128,6 +130,12 @@ pub enum ContractError {
     InvalidRecQuantity = 71,
     /// A registry or attestation reference is required.
     ComplianceRefMissing = 72,
+    /// No insurance policy exists for the meter (#1008).
+    InsurancePolicyNotFound = 73,
+    /// The meter's insurance policy has expired (#1008).
+    InsurancePolicyExpired = 74,
+    /// The claimed amount exceeds the policy's coverage limit (#1008).
+    ClaimExceedsCoverage = 75,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────

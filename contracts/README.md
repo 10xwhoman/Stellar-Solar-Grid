@@ -296,3 +296,20 @@ period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
 
 New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
 `CertificatePeriodOverlap` (52), `CertificateRetired` (53).
+
+## Meter Insurance Integration (#1008)
+
+The `solar_grid` contract provides on-chain insurance policy management and claims filing (`contracts/solar_grid/src/insurance.rs`) to protect physical meters against lightning strikes, theft, and accidental damage.
+
+### Data Structures
+
+- `InsurancePolicy`: `{ meter_id, owner, provider, premium, coverage, expiry, active }`
+- `InsuranceClaim`: `{ id, meter_id, claimant, provider, amount, reason, filed_at, status }`
+
+### Entrypoints
+
+- `purchase_insurance(env, meter_id, provider, premium, coverage, duration_secs)` — Transfers `premium` from the meter owner to `provider`, stores the active `InsurancePolicy`, and emits `InsurancePurchased`.
+- `file_insurance_claim(env, meter_id, amount, reason)` — Verifies the policy is active and unexpired and `amount <= coverage`, records an `InsuranceClaim`, and emits `ClaimFiled`.
+- `get_insurance_policy(env, meter_id)` — Returns the meter's `InsurancePolicy` (marking `active = false` if expired).
+- `is_meter_insured(env, meter_id)` — Returns `true` when the meter has an active, unexpired insurance policy.
+- `get_meter_claims(env, meter_id)` — Returns all claims filed for the meter.

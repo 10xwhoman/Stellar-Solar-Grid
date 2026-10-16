@@ -52,3 +52,21 @@ Endpoints:
 - `POST /api/meters/:meterId/heartbeat` — record a heartbeat over HTTP
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
+
+## Smart Contract Event Replay (#1007)
+
+The backend indexes every Soroban contract event with its ledger (`block`) number in SQLite (`contract_events`) and provides an event-sourcing replay engine (`src/lib/eventReplay.ts`) to reconstruct contract state at any historical block height and compare it against the current state for time-travel debugging and discrepancy analysis.
+
+### Endpoints
+
+- `POST /api/events/replay` — Replay indexed contract events across a block range (`fromBlock` to `toBlock`) and return the chronological event stream, reconstructed state, and optional state comparison (`compareWithCurrent: true`).
+  ```json
+  {
+    "fromBlock": 100,
+    "toBlock": 250,
+    "subject": "METER-001",
+    "compareWithCurrent": true
+  }
+  ```
+- `GET /api/events/state/:block` — Reconstruct the full contract state (or a single meter via `?subject=METER-001`) at a specific block height.
+- `GET /api/events/compare?historicalBlock=100&currentBlock=250` — Compare reconstructed state at `historicalBlock` against `currentBlock` (or latest block) and list all field-level discrepancies and deltas.

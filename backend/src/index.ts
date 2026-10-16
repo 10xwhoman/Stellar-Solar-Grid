@@ -342,3 +342,12 @@ app.use("/api/portfolio", portfolioRouter);
 
 // #925: Virtual power plant aggregation
 app.use("/api/vpp", vppRouter);
+
+// #1007: Smart Contract Event Replay
+import { eventsRouter } from "./routes/events.js";
+app.use("/api/events", eventsRouter);
+
+// #1010: Meter Virtual Twin Simulation
+import { simulationRouter } from "./routes/simulation.js";
+app.use("/api/simulation", simulationRouter);
+
