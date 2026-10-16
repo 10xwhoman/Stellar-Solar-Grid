@@ -110,6 +110,8 @@ import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
+import { workOrdersRouter } from "./routes/workOrders.js";
+import { surveysRouter } from "./routes/surveys.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -244,6 +246,10 @@ app.use("/api/grid", gridResilienceRouter);
 startResilienceMonitor();
 // #939: energy data privacy controls
 app.use("/api/privacy", writeLimiter, privacyRouter);
+// #991: contractor/technician portal
+app.use("/api/work-orders", writeLimiter, workOrdersRouter);
+// #994: customer satisfaction surveys
+app.use("/api/surveys", writeLimiter, surveysRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 

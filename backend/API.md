@@ -368,3 +368,195 @@ Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`
 See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.
+
+## Technician Portal (#991)
+
+Field technicians use these routes to manage installations and maintenance work
+orders. The mobile-optimized portal lives at `/technician`. See
+`docs/TECHNICIAN_PORTAL.md`.
+
+### `POST /api/work-orders`
+
+Creates a work order and optionally assigns it to a technician.
+
+Body:
+
+```json
+{
+  "type": "installation",
+  "meterId": "METER1",
+  "technicianId": "TECH1",
+  "priority": "high",
+  "scheduledFor": "2026-10-01T09:00:00.000Z",
+  "notes": "Replace meter and verify seal"
+}
+```
+
+`201` → the created work order, including its `id` and `status` (`pending`,
+`assigned`, `in_progress`, `completed`, or `cancelled`).
+
+### `GET /api/work-orders/assigned/:techId`
+
+Lists the work orders assigned to a technician, newest first. Optional query
+parameters: `status` (filter by status) and `limit` (default 50).
+
+```json
+{
+  "technicianId": "TECH1",
+  "workOrders": [
+    {
+      "id": "WO-1001",
+      "type": "installation",
+      "meterId": "METER1",
+      "status": "assigned",
+      "priority": "high",
+      "scheduledFor": "2026-10-01T09:00:00.000Z",
+      "photos": []
+    }
+  ]
+}
+```
+
+### `PATCH /api/work-orders/:id/complete`
+
+Marks a work order complete. Body may include `completedAt`, `notes`, and
+`signature` (base64-encoded customer signature). `404` if the work order does
+not exist.
+
+### `POST /api/work-orders/:id/photos`
+
+Uploads an installation-verification photo. Send `multipart/form-data` with a
+`photo` file field and an optional `caption`. `201` → `{ "id", "url",
+"caption", "uploadedAt" }`. Photos are also returned by the assigned-work-orders
+listing.
+
+### QR code scanning
+
+The portal registers meters by scanning the meter's QR code client-side and
+submitting the decoded `meterId` to `POST /api/work-orders`. No separate
+server-side scan endpoint is required.
+
+## Customer Satisfaction Surveys (#994)
+
+Surveys are delivered by email after payments or support interactions, and
+responses feed the NPS analytics dashboard. See `API.md` survey sections below
+and the analytics route for metric definitions.
+
+### `POST /api/surveys`
+
+Creates a survey definition and queues delivery to the targeted customers.
+
+Body:
+
+```json
+{
+  "name": "Post-payment satisfaction",
+  "trigger": "payment",
+  "questions": [
+    { "id": "nps", "type": "nps", "text": "How likely are you to recommend us?" },
+    { "id": "csat", "type": "rating", "text": "How satisfied are you with the service?" }
+  ]
+}
+```
+
+`201` → the created survey with its `id` and `status`.
+
+### `POST /api/surveys/:id/responses`
+
+Records a customer response. Body:
+
+```json
+{
+  "customerId": "CUST1",
+  "answers": [
+    { "questionId": "nps", "value": 9 },
+    { "questionId": "csat", "value": 5 }
+  ]
+}
+```
+
+`201` → the stored response. `404` if the survey does not exist; `400` if a
+required answer is missing or out of range.
+
+### `GET /api/surveys/analytics`
+
+Returns satisfaction metrics and the Net Promoter Score for a survey or the
+whole program. Optional query parameters: `surveyId` and `from`/`to` (ISO
+dates).
+
+NPS is calculated from the `nps` question on a 0–10 scale:
+
+- **Promoters**: responses scoring 9–10.
+- **Passives**: responses scoring 7–8.
+- **Detractors**: responses scoring 0–6.
+- **NPS** = `%promoters − %detractors`, ranging from −100 to +100.
+
+```json
+{
+  "responses": 120,
+  "promoters": 72,
+  "passives": 30,
+  "detractors": 18,
+  "nps": 45.0,
+  "csat": 4.3,
+  "responseRate": 0.24
+}
+```
+
+`csat` is the mean rating of `rating` questions normalized to a 1–5 scale and
+is `null` when no rating answers exist.
+
+## Seasonal Pricing (#992)
+
+Seasonal rates adjust the base energy price by a multiplier for a date range.
+The smart contract stores the `SeasonalRate` struct (`season`, `start_date`,
+`end_date`, `multiplier`) and applies the active rate automatically based on
+the current date, emitting a `SeasonalRateApplied` event. These backend routes
+expose the schedule to the frontend.
+
+### `GET /api/pricing/season`
+
+Returns the currently active season and the effective rate.
+
+```json
+{
+  "season": "summer",
+  "multiplier": 1.25,
+  "baseRate": 0.12,
+  "effectiveRate": 0.15,
+  "startDate": "2026-06-01",
+  "endDate": "2026-08-31"
+}
+```
+
+`season` is `null` when no seasonal rate is active.
+
+### `PUT /api/pricing/season`
+
+Admin-only. Creates or replaces the seasonal rate schedule. Body accepts an
+array of `SeasonalRate` objects:
+
+```json
+{
+  "rates": [
+    { "season": "summer", "startDate": "2026-06-01", "endDate": "2026-08-31", "multiplier": 1.25 },
+    { "season": "winter", "startDate": "2026-12-01", "endDate": "2027-02-28", "multiplier": 1.15 }
+  ]
+}
+```
+
+`200` → the stored schedule. `400` if ranges overlap or a multiplier is not
+positive.
+
+### `GET /api/pricing/season/history`
+
+Returns historical seasonal rates and usage for comparison. Optional query
+parameters: `from`/`to` (ISO dates) and `season`.
+
+```json
+{
+  "history": [
+    { "season": "summer", "year": 2025, "multiplier": 1.2, "avgRate": 0.144, "usageKwh": 4120 }
+  ]
+}
+```
