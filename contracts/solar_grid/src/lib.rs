@@ -2532,13 +2532,26 @@ impl SolarGridContract {
         env.storage().persistent().set(
             &DataKey::AdminProposal(id),
             &AdminProposal {
-                operation,
+                operation: operation.clone(),
                 approvals,
                 threshold,
                 expiry,
             },
         );
+        env.events().publish(
+            (symbol_short!("AdminPrpC"), id),
+            (String::from_str(&env, "AdminProposalCreated"), operation, threshold, expiry),
+        );
         Ok(id)
+    }
+
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        operation: AdminOperation,
+        expiry: u64,
+    ) -> Result<u32, ContractError> {
+        Self::propose_admin_operation(env, proposer, operation, expiry)
     }
 
     pub fn approve_admin_operation(
@@ -2574,6 +2587,14 @@ impl SolarGridContract {
         Ok(())
     }
 
+    pub fn approve_admin_action(
+        env: Env,
+        proposal_id: u32,
+        signer: Address,
+    ) -> Result<(), ContractError> {
+        Self::approve_admin_operation(env, proposal_id, signer)
+    }
+
     pub fn execute_admin_operation(env: Env, proposal_id: u32) -> Result<(), ContractError> {
         // Guards the EmergencyWithdraw arm's external token transfer below: without
         // this, a malicious token contract could reenter with the same proposal_id
@@ -2591,6 +2612,7 @@ impl SolarGridContract {
         if proposal.approvals.len() < proposal.threshold {
             return Err(ContractError::ProposalNotReady);
         }
+        let executed_op = proposal.operation.clone();
         match proposal.operation {
             AdminOperation::Pause => {
                 if Self::pause_is_active(&env) {
@@ -2641,7 +2663,15 @@ impl SolarGridContract {
             }
         }
         env.storage().persistent().remove(&key);
+        env.events().publish(
+            (symbol_short!("AdminPrpE"), proposal_id),
+            (String::from_str(&env, "AdminProposalExecuted"), executed_op),
+        );
         Ok(())
+    }
+
+    pub fn execute_admin_action(env: Env, proposal_id: u32) -> Result<(), ContractError> {
+        Self::execute_admin_operation(env, proposal_id)
     }
 
     fn is_multisig_admin(admins: &Vec<Address>, candidate: &Address) -> bool {
