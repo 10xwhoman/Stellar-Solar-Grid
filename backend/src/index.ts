@@ -350,3 +350,16 @@ app.use("/api/portfolio", portfolioRouter);
 
 // #925: Virtual power plant aggregation
 app.use("/api/vpp", vppRouter);
+
+// #1006: Meter Network Topology Visualization
+import { networkTopologyRouter } from "./routes/networkTopology.js";
+app.use("/api/network", networkTopologyRouter);
+
+// #1005: White-Label Provider Customization
+import { providersBrandingRouter } from "./routes/providersBranding.js";
+app.use("/api/providers", providersBrandingRouter);
+
+// #1004: Blockchain Transaction History Explorer
+import { transactionsRouter } from "./routes/transactions.js";
+app.use("/api/transactions", transactionsRouter);
+
