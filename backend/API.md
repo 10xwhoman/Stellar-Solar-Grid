@@ -369,81 +369,47 @@ See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.
 
-## Scheduled Maintenance Windows (#979)
+---
 
-Maintenance windows are stored in the `maintenance_windows` table (`id`,
-`title`, `description`, `starts_at`, `ends_at`, `affected_meters`, `status`,
-`created_at`, …). `affected_meters` is a JSON array of meter IDs impacted by
-the window; an empty array means the maintenance is platform-wide. Windows are
-created with `status: "scheduled"` and transition to `"active"` while the
-current time is between `starts_at` and `ends_at`, and to `"completed"` after
-`ends_at`.
+## Energy Arbitrage Opportunities Detector (#1009)
 
-### `POST /api/maintenance`
+### `GET /api/meters/:meterId/arbitrage`
 
-Creates a maintenance window. Requires the admin session or `X-Admin-Key`.
+Analyzes real-time 24-hour grid prices and solar generation for `:meterId`, computes the optimal battery charge/discharge schedule, estimates daily and monthly profit potential, and returns automated alerts when profitable arbitrage windows are detected.
 
-Request body:
+**Query Parameters:**
+- `batteryCapacityKwh` *(optional, number, default `13.5`)* — Usable battery capacity in kWh.
+- `roundTripEfficiency` *(optional, number, default `0.9`)* — Battery charge/discharge round-trip efficiency (`0..1`).
+- `minSpreadPercent` *(optional, number, default `20`)* — Minimum price spread percentage required to flag an opportunity.
 
+**Response (`200 OK`):**
 ```json
 {
-  "title": "Substation upgrade",
-  "description": "Replacing the feeder transformer.",
-  "startsAt": "2026-10-01T02:00:00.000Z",
-  "endsAt": "2026-10-01T05:00:00.000Z",
-  "affectedMeters": ["METER1", "METER2"]
+  "meterId": "METER-001",
+  "generatedAt": "2026-10-16T06:30:00.000Z",
+  "batteryCapacityKwh": 13.5,
+  "roundTripEfficiency": 0.9,
+  "currentGridPricePerKwh": 0.08,
+  "currentSolarGenerationKw": 1.09,
+  "estimatedDailyProfitUsd": 5.18,
+  "estimatedMonthlyProfitUsd": 155.4,
+  "opportunities": [
+    {
+      "id": "METER-001-arb-night-peak",
+      "chargeWindowStartHour": 1,
+      "chargeWindowEndHour": 5,
+      "dischargeWindowStartHour": 17,
+      "dischargeWindowEndHour": 21,
+      "avgChargePricePerKwh": 0.08,
+      "avgDischargePricePerKwh": 0.31,
+      "spreadPerKwh": 0.2211,
+      "spreadPercent": 287.5,
+      "recommendedKwh": 10.8,
+      "estimatedProfitUsd": 2.39,
+      "recommendation": "Charge battery from grid between 01:00–05:00 ($0.08/kWh) and discharge during 17:00–21:00 peak ($0.31/kWh)."
+    }
+  ],
+  "optimalSchedule": [],
+  "alerts": []
 }
 ```
-
-`201` → the created window:
-
-```json
-{
-  "id": "mw_01H...",
-  "title": "Substation upgrade",
-  "description": "Replacing the feeder transformer.",
-  "startsAt": "2026-10-01T02:00:00.000Z",
-  "endsAt": "2026-10-01T05:00:00.000Z",
-  "affectedMeters": ["METER1", "METER2"],
-  "status": "scheduled",
-  "createdAt": "2026-09-28T12:00:00.000Z"
-}
-```
-
-`400` when `title`, `startsAt`, or `endsAt` is missing, when `endsAt` is not
-after `startsAt`, or when `affectedMeters` is not an array of strings.
-
-### `GET /api/maintenance/upcoming`
-
-Lists scheduled windows whose `ends_at` is in the future, ordered by
-`starts_at` ascending. Optional `?limit=` (default 20, max 100).
-
-```json
-{ "windows": [ { "id": "mw_01H...", "status": "scheduled", "affectedMeters": ["METER1"] } ] }
-```
-
-### `GET /api/maintenance/active`
-
-Lists windows currently in progress (`starts_at <= now < ends_at`). The
-frontend polls this route to decide whether to show the maintenance banner.
-
-```json
-{ "windows": [ { "id": "mw_01H...", "status": "active", "affectedMeters": ["METER1"] } ] }
-```
-
-### `GET /api/maintenance/:id`
-
-Returns a single window, or `404` if it does not exist.
-
-### `DELETE /api/maintenance/:id`
-
-Cancels a window. `204` on success, `404` if not found.
-
-### Email notifications
-
-Subscribers receive reminder emails **48 hours**, **24 hours**, and **1 hour**
-before `starts_at`. Reminders are sent once per window per interval; the
-scheduler checks pending reminders at `MAINTENANCE_REMINDER_INTERVAL_MS`
-(default one minute) and skips windows that have already started. Delivery
-uses the configured email provider (see Issue #882); the `log` provider does
-not deliver mail.

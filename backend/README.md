@@ -53,60 +53,13 @@ Endpoints:
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
 
-## Energy Storage Battery Integration (#980)
+## Grid stability and meter geofencing (#1016/#1017)
 
-Meters with an attached battery publish telemetry to
-`solargrid/meters/{meterId}/battery` (or POST to
-`/api/meters/:meterId/battery`). The JSON payload reports the raw battery
-measurements:
+Frequency telemetry can be published by meters on `solargrid/meters/{meterId}/frequency` with `{ "frequencyHz": 49.8, "loadKw": 2.4 }`. The bridge applies the 50 Hz threshold response and sends a relay command without routing the message through billing. HTTP equivalents are `POST /api/grid-services/frequency/readings`, `POST /api/grid-services/frequency/contributions`, and `GET /api/grid-services/frequency/:meterId/summary`.
 
-```json
-{
-  "voltage": 51.2,
-  "current": 12.5,
-  "stateOfCharge": 87.5
-}
-```
+GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/meters/{meterId}/location`. The backend compares the report with the registered haversine geofence and records a `LocationVerificationFailed` result when it is outside the permitted radius. Out-of-fence meters are automatically disabled for fraud review.
 
-| Field           | Description                                              |
-|-----------------|----------------------------------------------------------|
-| `voltage`       | Battery voltage in volts                                 |
-| `current`       | Battery current in amps (positive = charging)            |
-| `stateOfCharge` | State of charge as a percentage (0–100)                  |
-
-### Battery Analytics
-
-The backend derives health and cycle information from the reported
-telemetry:
-
-- **State of charge (SOC)** — the latest reported charge level, expressed as a
-  percentage of capacity.
-- **Capacity** — the usable capacity in kWh, tracked per meter.
-- **Health** — the ratio of current usable capacity to the original rated
-  capacity, expressed as a percentage. A new battery reports 100% health.
-- **Cycles** — the number of equivalent full charge/discharge cycles,
-  accumulated from the charge throughput reported by the meter.
-
-### Battery Endpoint
-
-- `GET /api/meters/:meterId/battery` — returns the battery stats for a meter:
-  charge level (SOC), capacity, health percentage, cycle count, and the
-  predicted replacement date.
-
-### Degradation Alert
-
-When battery health degrades below **80%**, the backend logs a degradation
-alert for the meter so operators can plan a replacement.
-
-### Replacement Date Prediction
-
-The backend extrapolates the observed health degradation rate over time to
-predict a **battery replacement date** — the date at which health is expected
-to fall below the replacement threshold. The prediction is included in the
-`GET /api/meters/:meterId/battery` response.
-
-### Tests
-
-Battery monitoring (telemetry ingestion, health/cycle calculation, the
-below-80% degradation alert, and replacement date prediction) is covered by
-the backend test suite.
+- `POST /api/grid-services/geofences` — register the expected location and radius
+- `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
+- `GET /api/grid-services/geofences/:meterId` — status and verification history
+- `GET /api/grid-services/geofences` — data for the frontend map

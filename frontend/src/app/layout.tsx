@@ -8,6 +8,7 @@ import { ContractPauseBanner } from "@/components/ContractPauseBanner";
 import { MaintenanceBanner } from "@/components/MaintenanceBanner";
 import { Footer } from "@/components/Footer";
 import { WidgetSync } from "@/components/WidgetSync";
+import ChatWidget from "@/components/ChatWidget";
 import { branding, brandingCssVars } from "@/lib/branding";
 import "./globals.css";
 
@@ -46,8 +47,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <WidgetSync />
             <OfflineBanner />
             <ContractPauseBanner />
-            <MaintenanceBanner />
-            <ToastProvider>{children}</ToastProvider>
+            <ToastProvider>{children}<ChatWidget /></ToastProvider>
             <Footer />
           </I18nProvider>
         </ErrorBoundary>

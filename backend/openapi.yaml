@@ -377,6 +377,269 @@ components:
           type: integer
           description: Revenue share in basis points (100 = 1%)
 
+    # ── Technician portal (#991) ──────────────────────────────────────────────
+
+    Technician:
+      type: object
+      description: A field technician who can be assigned work orders.
+      required: [id, name, email, active]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          nullable: true
+        region:
+          type: string
+          nullable: true
+          description: Service region the technician is responsible for
+        skills:
+          type: array
+          items: { type: string }
+          description: e.g. installation, maintenance, meter_repair
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    WorkOrder:
+      type: object
+      description: An installation or maintenance job assigned to a technician.
+      required: [id, type, status, createdAt]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [installation, maintenance, repair, inspection]
+        status:
+          type: string
+          enum: [pending, assigned, in_progress, completed, cancelled]
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          default: normal
+        meterId:
+          type: string
+          nullable: true
+          description: Meter the work order relates to
+        customerName:
+          type: string
+          nullable: true
+        address:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        technicianId:
+          type: string
+          nullable: true
+        scheduledFor:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completionNotes:
+          type: string
+          nullable: true
+        photos:
+          type: array
+          items: { type: string, format: uri }
+          description: URLs of uploaded verification photos
+        createdAt:
+          type: string
+          format: date-time
+
+    WorkOrderPhoto:
+      type: object
+      description: A photo uploaded as installation verification evidence.
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+        caption:
+          type: string
+          nullable: true
+        uploadedAt:
+          type: string
+          format: date-time
+
+    # ── Customer satisfaction surveys (#994) ─────────────────────────────────
+
+    Survey:
+      type: object
+      description: A customer satisfaction survey.
+      required: [id, type, status, createdAt]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [post_payment, post_support, periodic]
+        status:
+          type: string
+          enum: [draft, sent, closed]
+        meterId:
+          type: string
+          nullable: true
+        customerEmail:
+          type: string
+          format: email
+          nullable: true
+        subject:
+          type: string
+          nullable: true
+        questions:
+          type: array
+          items:
+            type: object
+            required: [id, text]
+            properties:
+              id: { type: string }
+              text: { type: string }
+              kind:
+                type: string
+                enum: [nps, rating, free_text]
+        sentAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    SurveyResponse:
+      type: object
+      description: A single customer's answers to a survey.
+      required: [id, surveyId, submittedAt]
+      properties:
+        id:
+          type: string
+        surveyId:
+          type: string
+        meterId:
+          type: string
+          nullable: true
+        npsScore:
+          type: integer
+          minimum: 0
+          maximum: 10
+          nullable: true
+          description: Net Promoter Score answer (0–10)
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          nullable: true
+        comment:
+          type: string
+          nullable: true
+        answers:
+          type: object
+          additionalProperties: true
+        submittedAt:
+          type: string
+          format: date-time
+
+    NpsAnalytics:
+      type: object
+      description: Aggregated satisfaction and Net Promoter Score insights.
+      required: [totalResponses, npsScore]
+      properties:
+        totalResponses:
+          type: integer
+        npsScore:
+          type: number
+          minimum: -100
+          maximum: 100
+          description: Percentage of promoters minus percentage of detractors
+        promoters:
+          type: integer
+          description: Responses scoring 9–10
+        passives:
+          type: integer
+          description: Responses scoring 7–8
+        detractors:
+          type: integer
+          description: Responses scoring 0–6
+        averageRating:
+          type: number
+          nullable: true
+        responseRate:
+          type: number
+          nullable: true
+          description: Responses divided by surveys sent
+        periodStart:
+          type: string
+          format: date-time
+          nullable: true
+        periodEnd:
+          type: string
+          format: date-time
+          nullable: true
+        trend:
+          type: array
+          items:
+            type: object
+            properties:
+              period: { type: string }
+              npsScore: { type: number }
+              responses: { type: integer }
+
+    # ── Seasonal pricing (#992) ──────────────────────────────────────────────
+
+    SeasonalRate:
+      type: object
+      description: A seasonal rate multiplier applied to the base energy price.
+      required: [season, startDate, endDate, multiplier]
+      properties:
+        season:
+          type: string
+          enum: [spring, summer, autumn, winter]
+        startDate:
+          type: string
+          format: date
+          description: Inclusive start of the season (MM-DD or ISO date)
+        endDate:
+          type: string
+          format: date
+          description: Inclusive end of the season (MM-DD or ISO date)
+        multiplier:
+          type: number
+          exclusiveMinimum: 0
+          description: Rate multiplier applied to the base price (1.0 = no change)
+        label:
+          type: string
+          nullable: true
+
+    SeasonalRateHistoryEntry:
+      type: object
+      required: [season, multiplier, appliedAt]
+      properties:
+        season:
+          type: string
+          enum: [spring, summer, autumn, winter]
+        multiplier:
+          type: number
+        appliedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+
   # ── Shared response components ──────────────────────────────────────────────
 
   responses:
@@ -1753,6 +2016,347 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Work Orders (technician portal, #991) ────────────────────────────────────
+
+  /api/work-orders:
+    post:
+      summary: Create a work order
+      description: |
+        Creates an installation, maintenance, repair, or inspection work order.
+        Optionally assigns it to a technician immediately.
+      operationId: createWorkOrder
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [installation, maintenance, repair, inspection]
+                priority:
+                  type: string
+                  enum: [low, normal, high, urgent]
+                  default: normal
+                meterId: { type: string }
+                customerName: { type: string }
+                address: { type: string }
+                description: { type: string }
+                technicianId: { type: string }
+                scheduledFor: { type: string, format: date-time }
+      responses:
+        "201":
+          description: Work order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkOrder"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/work-orders/assigned/{techId}:
+    get:
+      summary: List a technician's assigned tasks
+      description: Returns all work orders assigned to the given technician.
+      operationId: getAssignedWorkOrders
+      parameters:
+        - name: techId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Filter by work order status
+          schema:
+            type: string
+            enum: [pending, assigned, in_progress, completed, cancelled]
+      responses:
+        "200":
+          description: Assigned work orders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrders, count]
+                properties:
+                  workOrders:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkOrder"
+                  count: { type: integer }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/work-orders/{id}/complete:
+    patch:
+      summary: Mark a work order complete
+      description: |
+        Marks the work order as completed, records the completion timestamp and
+        optional notes, and stores any verification photos already uploaded.
+      operationId: completeWorkOrder
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                completionNotes: { type: string }
+                photos:
+                  type: array
+                  items: { type: string, format: uri }
+      responses:
+        "200":
+          description: Work order completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkOrder"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/work-orders/{id}/photos:
+    post:
+      summary: Upload installation verification photos
+      description: |
+        Attaches one or more verification photos to a work order. Photos are
+        submitted as URLs (e.g. after direct upload to object storage).
+      operationId: uploadWorkOrderPhotos
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [photos]
+              properties:
+                photos:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: "#/components/schemas/WorkOrderPhoto"
+      responses:
+        "201":
+          description: Photos attached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkOrder"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Surveys (#994) ───────────────────────────────────────────────────────────
+
+  /api/surveys:
+    post:
+      summary: Create a customer satisfaction survey
+      description: |
+        Creates a survey and, when `send` is true, queues the survey email to
+        the customer. Surveys can also be created automatically after payments
+        or support interactions.
+      operationId: createSurvey
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [post_payment, post_support, periodic]
+                meterId: { type: string }
+                customerEmail: { type: string, format: email }
+                subject: { type: string }
+                send:
+                  type: boolean
+                  default: false
+                questions:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, text]
+                    properties:
+                      id: { type: string }
+                      text: { type: string }
+                      kind:
+                        type: string
+                        enum: [nps, rating, free_text]
+      responses:
+        "201":
+          description: Survey created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Survey"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/surveys/{id}/responses:
+    post:
+      summary: Record a survey response
+      description: Records a customer's answers, including an optional NPS score.
+      operationId: createSurveyResponse
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                npsScore:
+                  type: integer
+                  minimum: 0
+                  maximum: 10
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                comment: { type: string }
+                answers:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201":
+          description: Response recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SurveyResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/surveys/analytics:
+    get:
+      summary: Satisfaction and NPS analytics
+      description: |
+        Returns aggregated satisfaction metrics, including the Net Promoter
+        Score, promoter/passive/detractor counts, and an optional trend series.
+      operationId: getSurveyAnalytics
+      security:
+        - AdminKey: []
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [post_payment, post_support, periodic]
+      responses:
+        "200":
+          description: Survey analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NpsAnalytics"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Seasonal pricing (#992) ──────────────────────────────────────────────────
+
+  /api/pricing/season:
+    get:
+      summary: Current seasonal rate
+      description: |
+        Returns the seasonal rate currently in effect based on the current date,
+        along with the effective price after applying the multiplier.
+      operationId: getCurrentSeason
+      responses:
+        "200":
+          description: Current season and rate
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current, baseRate, effectiveRate]
+                properties:
+                  current:
+                    $ref: "#/components/schemas/SeasonalRate"
+                  baseRate:
+                    type: number
+                    description: Base energy rate before the seasonal multiplier
+                  effectiveRate:
+                    type: number
+                    description: Base rate multiplied by the current seasonal multiplier
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/pricing/season/history:
+    get:
+      summary: Historical seasonal rate comparison
+      description: |
+        Returns the seasonal rates that have applied over time so customers can
+        compare current pricing against previous seasons.
+      operationId: getSeasonalRateHistory
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Seasonal rate history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [history, count]
+                properties:
+                  history:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SeasonalRateHistoryEntry"
+                  count: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
   /api/weather/energy-forecast:
     get:

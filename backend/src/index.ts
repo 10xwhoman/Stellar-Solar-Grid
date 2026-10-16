@@ -63,8 +63,12 @@ import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
 import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
 import { consumptionAnalyticsRouter } from "./routes/consumptionAnalytics.js";
 import { recsRouter } from "./routes/recs.js";
+import { leasesRouter } from "./routes/leases.js";
+import { chatbotRouter } from "./routes/chatbot.js";
+import { complianceReportsRouter } from "./routes/complianceReports.js";
 import { portfolioRouter } from "./routes/portfolio.js";
 import { vppRouter } from "./routes/vpp.js";
+import { gridServicesRouter } from "./routes/gridServices.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startResilienceMonitor } from "./lib/gridResilience.js";
@@ -107,11 +111,8 @@ import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
-// #979: scheduled maintenance windows
-import { maintenanceRouter } from "./routes/maintenance.js";
-import { startMaintenanceScheduler } from "./lib/maintenance.js";
-// #985: automatic meter firmware updates
-import { firmwareRouter } from "./routes/firmware.js";
+import { workOrdersRouter } from "./routes/workOrders.js";
+import { surveysRouter } from "./routes/surveys.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -243,9 +244,14 @@ app.use("/api/orderbook", orderBookRouter);
 app.use("/api/admin/dashboard", adminDashboardRouter);
 // #941: grid resilience scoring
 app.use("/api/grid", gridResilienceRouter);
+app.use("/api/grid-services", gridServicesRouter);
 startResilienceMonitor();
 // #939: energy data privacy controls
 app.use("/api/privacy", writeLimiter, privacyRouter);
+// #991: contractor/technician portal
+app.use("/api/work-orders", writeLimiter, workOrdersRouter);
+// #994: customer satisfaction surveys
+app.use("/api/surveys", writeLimiter, surveysRouter);
 
 // #979: scheduled maintenance windows
 app.use("/api/maintenance", writeLimiter, maintenanceRouter);
@@ -344,9 +350,25 @@ app.use("/api/analytics/patterns", consumptionAnalyticsRouter);
 
 // #927: Renewable Energy Credit marketplace
 app.use("/api/recs", recsRouter);
+app.use("/api/leases", leasesRouter);
+app.use("/api/chatbot", chatbotRouter);
+app.use("/api/reports", complianceReportsRouter);
 
 // #926: Energy portfolio management
 app.use("/api/portfolio", portfolioRouter);
 
 // #925: Virtual power plant aggregation
 app.use("/api/vpp", vppRouter);
+
+// #1006: Meter Network Topology Visualization
+import { networkTopologyRouter } from "./routes/networkTopology.js";
+app.use("/api/network", networkTopologyRouter);
+
+// #1005: White-Label Provider Customization
+import { providersBrandingRouter } from "./routes/providersBranding.js";
+app.use("/api/providers", providersBrandingRouter);
+
+// #1004: Blockchain Transaction History Explorer
+import { transactionsRouter } from "./routes/transactions.js";
+app.use("/api/transactions", transactionsRouter);
+
