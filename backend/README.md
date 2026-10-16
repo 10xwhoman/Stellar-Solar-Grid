@@ -52,3 +52,18 @@ Endpoints:
 - `POST /api/meters/:meterId/heartbeat` — record a heartbeat over HTTP
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
+
+
+## Meter Energy Theft Detection (`#1012`)
+
+### Overview
+The Energy Theft Detection module uses an ML/statistical baseline profile (`TheftDetectionService`) to compare expected hourly consumption against actual smart meter readings, detecting physical meter bypasses, sudden load drops, and irregular tampering patterns.
+
+### API Endpoint
+- **`GET /api/meters/:meterId/theft-analysis`**
+  - Returns `riskScore` (0–100), `probability` (0.0–1.0), `status` (`NORMAL` | `SUSPICIOUS` | `HIGH_THEFT_PROBABILITY`), detected `anomalies`, automatic `alert` notification for the energy provider when risk is high, and a structured `investigationReport`.
+
+### Key Components
+- `backend/src/services/theftDetectionService.ts`: ML baseline training, Z-score & load-drop anomaly detection, provider alert dispatch, and investigation report generator.
+- `backend/src/routes/theftAnalysisRoutes.ts`: Express route handler for `/api/meters/:meterId/theft-analysis`.
+- `frontend/src/components/MeterTheftDashboard.tsx`: Dashboard visual risk indicators and investigation report viewer.
