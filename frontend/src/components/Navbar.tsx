@@ -32,6 +32,9 @@ export default function Navbar() {
     { href: "/smart-home", label: t("smartHome") },
     { href: "/backtest", label: "Backtest" },
     { href: "/widget", label: "Widget" },
+    { href: "/leases", label: "Meter leasing" },
+    { href: "/compliance", label: "Compliance" },
+    { href: "/recs", label: "RECs" },
   ];
 
   useEffect(() => {

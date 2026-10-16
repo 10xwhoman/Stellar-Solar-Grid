@@ -53,17 +53,13 @@ Endpoints:
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
 
+## Grid stability and meter geofencing (#1016/#1017)
 
-## Meter Energy Theft Detection (`#1012`)
+Frequency telemetry can be published by meters on `solargrid/meters/{meterId}/frequency` with `{ "frequencyHz": 49.8, "loadKw": 2.4 }`. The bridge applies the 50 Hz threshold response and sends a relay command without routing the message through billing. HTTP equivalents are `POST /api/grid-services/frequency/readings`, `POST /api/grid-services/frequency/contributions`, and `GET /api/grid-services/frequency/:meterId/summary`.
 
-### Overview
-The Energy Theft Detection module uses an ML/statistical baseline profile (`TheftDetectionService`) to compare expected hourly consumption against actual smart meter readings, detecting physical meter bypasses, sudden load drops, and irregular tampering patterns.
+GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/meters/{meterId}/location`. The backend compares the report with the registered haversine geofence and records a `LocationVerificationFailed` result when it is outside the permitted radius. Out-of-fence meters are automatically disabled for fraud review.
 
-### API Endpoint
-- **`GET /api/meters/:meterId/theft-analysis`**
-  - Returns `riskScore` (0–100), `probability` (0.0–1.0), `status` (`NORMAL` | `SUSPICIOUS` | `HIGH_THEFT_PROBABILITY`), detected `anomalies`, automatic `alert` notification for the energy provider when risk is high, and a structured `investigationReport`.
-
-### Key Components
-- `backend/src/services/theftDetectionService.ts`: ML baseline training, Z-score & load-drop anomaly detection, provider alert dispatch, and investigation report generator.
-- `backend/src/routes/theftAnalysisRoutes.ts`: Express route handler for `/api/meters/:meterId/theft-analysis`.
-- `frontend/src/components/MeterTheftDashboard.tsx`: Dashboard visual risk indicators and investigation report viewer.
+- `POST /api/grid-services/geofences` — register the expected location and radius
+- `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
+- `GET /api/grid-services/geofences/:meterId` — status and verification history
+- `GET /api/grid-services/geofences` — data for the frontend map

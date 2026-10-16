@@ -9,6 +9,7 @@ use soroban_sdk::{
 
 mod certificates;
 mod multi_asset;
+mod leases;
 mod recs;
 mod staking;
 mod warranty;
@@ -16,6 +17,7 @@ mod warranty;
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
+pub use leases::{LeaseAgreement, LeaseStatus};
 pub use recs::{
     RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
     RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
@@ -128,6 +130,8 @@ pub enum ContractError {
     InvalidRecQuantity = 71,
     /// A registry or attestation reference is required.
     ComplianceRefMissing = 72,
+    /// No lease agreement exists with the supplied id.
+    LeaseNotFound = 73,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -537,6 +541,34 @@ fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubscriptionTier {
+    pub id: u32,
+    pub name: String,
+    pub price: i128,
+    pub included_kwh: u64,
+    pub rollover_limit: u64,
+}
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnergySubscription {
+    pub owner: Address,
+    pub tier_id: u32,
+    pub remaining_kwh: u64,
+    pub rollover_kwh: u64,
+    pub renewed_at: u64,
+    pub active: bool,
+}
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnergyGift {
+    pub sender: Address,
+    pub recipient: Address,
+    pub amount: i128,
+    pub message: Option<String>,
+    pub sent_at: u64,
+}
+#[contracttype]
 pub enum DataKey {
     Meter(String),
     OwnerMeters(Address),
@@ -574,6 +606,10 @@ pub enum DataKey {
     ReferralCredit(Address),
     /// Referral statistics for a referrer (Issue #831).
     ReferralStats(Address),
+    SubscriptionTier(u32),
+    SubscriptionTierCount,
+    Subscription(Address),
+    GiftHistory(Address),
 }
 
 #[contracttype]
@@ -3311,6 +3347,109 @@ impl SolarGridContract {
         Ok(payouts)
     }
 
+    // ── Grid stability services (#1016) ─────────────────────────────────────
+    /// Settle a verified frequency-response contribution for a meter.
+    pub fn record_grid_service_provided(
+        env: Env,
+        meter_id: String,
+        response_kwh: u64,
+        revenue: i128,
+    ) -> Result<(), ContractError> {
+        if response_kwh == 0 || revenue < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let oracle: Address = env
+            .storage()
+            .instance()
+            .get(&ORACLE)
+            .ok_or(ContractError::OracleNotSet)?;
+        oracle.require_auth();
+        let key = DataKey::Meter(meter_id.clone());
+        Self::get_meter_or_error(&env, &key)?;
+        let balance_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+        env.storage().persistent().set(&balance_key, &balance.saturating_add(revenue));
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "GridServiceProvided"), meter_id),
+            (response_kwh, revenue),
+        );
+        Ok(())
+    }
+
+    // ── Energy credit gifting and subscription boxes (#1018/#1019) ─────────
+    /// Transfer prepaid energy credits between two registered meter owners.
+    pub fn gift_energy_credit(
+        env: Env, sender_meter_id: String, recipient_meter_id: String, amount: i128, message: Option<String>,
+    ) -> Result<(), ContractError> {
+        if amount <= 0 { return Err(ContractError::InvalidAmount); }
+        if let Some(ref memo) = message { if memo.len() > MAX_MEMO_LEN { return Err(ContractError::MemoTooLong); } }
+        let sender_key = DataKey::Meter(sender_meter_id.clone());
+        let recipient_key = DataKey::Meter(recipient_meter_id.clone());
+        let sender = Self::get_meter_or_error(&env, &sender_key)?;
+        let recipient = Self::get_meter_or_error(&env, &recipient_key)?;
+        sender.owner.require_auth();
+        let sender_balance_key = DataKey::MeterBalance(sender_meter_id.clone());
+        let recipient_balance_key = DataKey::MeterBalance(recipient_meter_id.clone());
+        let sender_balance: i128 = env.storage().persistent().get(&sender_balance_key).unwrap_or(0);
+        if sender_balance < amount { return Err(ContractError::InsufficientBalance); }
+        let recipient_balance: i128 = env.storage().persistent().get(&recipient_balance_key).unwrap_or(0);
+        env.storage().persistent().set(&sender_balance_key, &(sender_balance - amount));
+        env.storage().persistent().set(&recipient_balance_key, &recipient_balance.saturating_add(amount));
+        let now = env.ledger().timestamp();
+        let gift = EnergyGift { sender: sender.owner.clone(), recipient: recipient.owner.clone(), amount, message, sent_at: now };
+        let mut history: Vec<EnergyGift> = env.storage().persistent().get(&DataKey::GiftHistory(sender.owner.clone())).unwrap_or(Vec::new(&env));
+        history.push_back(gift.clone());
+        env.storage().persistent().set(&DataKey::GiftHistory(sender.owner.clone()), &history);
+        env.events().publish((EVT_NS, Symbol::new(&env, "EnergyGifted")), (sender.owner, recipient.owner, amount));
+        Ok(())
+    }
+    pub fn get_gift_history(env: Env, owner: Address) -> Vec<EnergyGift> { env.storage().persistent().get(&DataKey::GiftHistory(owner)).unwrap_or(Vec::new(&env)) }
+    /// Admin creates a subscription box tier. Prices are in token base units.
+    pub fn create_subscription_tier(env: Env, name: String, price: i128, included_kwh: u64, rollover_limit: u64) -> Result<u32, ContractError> {
+        Self::require_admin_action(&env, "create_subscription_tier", "contract")?;
+        if price <= 0 || included_kwh == 0 { return Err(ContractError::InvalidAmount); }
+        let id: u32 = env.storage().instance().get(&DataKey::SubscriptionTierCount).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::SubscriptionTier(id), &SubscriptionTier { id, name, price, included_kwh, rollover_limit });
+        env.storage().instance().set(&DataKey::SubscriptionTierCount, &(id + 1));
+        Ok(id)
+    }
+    pub fn get_subscription_tier(env: Env, tier_id: u32) -> Option<SubscriptionTier> { env.storage().persistent().get(&DataKey::SubscriptionTier(tier_id)) }
+    pub fn subscribe(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        owner.require_auth();
+        let tier = Self::get_subscription_tier(env.clone(), tier_id).ok_or(ContractError::InvalidConfiguration)?;
+        env.storage().persistent().set(&DataKey::Subscription(owner.clone()), &EnergySubscription { owner: owner.clone(), tier_id, remaining_kwh: tier.included_kwh, rollover_kwh: 0, renewed_at: env.ledger().timestamp(), active: true });
+        env.events().publish((EVT_NS, Symbol::new(&env, "SubscriptionRenewed")), (owner, tier_id, tier.price));
+        Ok(())
+    }
+    pub fn get_subscription(env: Env, owner: Address) -> Option<EnergySubscription> { env.storage().persistent().get(&DataKey::Subscription(owner)) }
+    pub fn upgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> { Self::change_subscription(env, owner, tier_id) }
+    pub fn downgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> { Self::change_subscription(env, owner, tier_id) }
+    fn change_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        owner.require_auth();
+        let tier = Self::get_subscription_tier(env.clone(), tier_id).ok_or(ContractError::InvalidConfiguration)?;
+        let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner.clone())).ok_or(ContractError::InvalidConfiguration)?;
+        sub.tier_id = tier_id; sub.rollover_kwh = sub.remaining_kwh.min(tier.rollover_limit); sub.remaining_kwh = tier.included_kwh; sub.renewed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&DataKey::Subscription(owner.clone()), &sub);
+        env.events().publish((EVT_NS, Symbol::new(&env, "SubscriptionRenewed")), (owner, tier_id, tier.price));
+        Ok(())
+    }
+    pub fn renew_subscription(env: Env, owner: Address) -> Result<(), ContractError> {
+        owner.require_auth();
+        let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner.clone())).ok_or(ContractError::InvalidConfiguration)?;
+        let tier = Self::get_subscription_tier(env.clone(), sub.tier_id).ok_or(ContractError::InvalidConfiguration)?;
+        let meter_ids: Vec<String> = env.storage().persistent().get(&DataKey::OwnerMeters(owner.clone())).unwrap_or(Vec::new(&env));
+        let meter_id = meter_ids.get(0).ok_or(ContractError::MeterNotFound)?;
+        let balance_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+        if balance < tier.price { return Err(ContractError::InsufficientBalance); }
+        sub.rollover_kwh = sub.remaining_kwh.min(tier.rollover_limit); sub.remaining_kwh = tier.included_kwh.saturating_add(sub.rollover_kwh); sub.renewed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&balance_key, &(balance - tier.price)); env.storage().persistent().set(&DataKey::Subscription(owner.clone()), &sub);
+        env.events().publish((EVT_NS, Symbol::new(&env, "SubscriptionRenewed")), (owner, sub.tier_id, tier.price)); Ok(())
+    }
+    pub fn consume_subscription_kwh(env: Env, owner: Address, kwh: u64) -> Result<u64, ContractError> {
+        let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner)).ok_or(ContractError::InvalidConfiguration)?;
+        if sub.remaining_kwh < kwh { return Err(ContractError::InsufficientBalance); } sub.remaining_kwh -= kwh; let remaining = sub.remaining_kwh; env.storage().persistent().set(&DataKey::Subscription(sub.owner.clone()), &sub); Ok(remaining)
+    }
     // ── Emergency / admin controls (Closes #686) ─────────────────────────────
 
     /// Announce, then (after a timelock) execute, an emergency withdrawal of
