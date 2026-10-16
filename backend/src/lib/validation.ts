@@ -116,6 +116,51 @@ export const SmsPaymentWebhookSchema = z
   })
   .strict();
 
+/** Locales supported by the voice assistant integration (issue #989). */
+export const VOICE_SUPPORTED_LOCALES = [
+  "en-US",
+  "en-GB",
+  "es-ES",
+  "fr-FR",
+  "pt-BR",
+  "sw-KE",
+] as const;
+
+export const VoiceLocaleSchema = z.enum(VOICE_SUPPORTED_LOCALES);
+
+export const VoiceParseSchema = z
+  .object({
+    text: z
+      .string()
+      .trim()
+      .min(1, "text is required")
+      .max(500, "text must be at most 500 characters"),
+    locale: VoiceLocaleSchema,
+  })
+  .strict();
+
+export const VoicePaymentConfirmSchema = z
+  .object({
+    token: z
+      .string()
+      .trim()
+      .regex(/^[0-9a-fA-F]+$/, "token must be a hexadecimal string")
+      .min(32, "token must be at least 32 characters")
+      .max(128, "token must be at most 128 characters"),
+    pin: z
+      .string()
+      .trim()
+      .min(4, "pin must be at least 4 characters")
+      .max(10, "pin must be at most 10 characters"),
+  })
+  .strict();
+
+export const VoicePaymentCancelSchema = z
+  .object({
+    token: z.string().trim().min(1, "token is required"),
+  })
+  .strict();
+
 type RequestSchemaSet = {
   body?: ZodTypeAny;
   params?: ZodTypeAny;
@@ -171,3 +216,6 @@ export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
 export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;
+export type VoiceParseInput = z.infer<typeof VoiceParseSchema>;
+export type VoicePaymentConfirmInput = z.infer<typeof VoicePaymentConfirmSchema>;
+export type VoicePaymentCancelInput = z.infer<typeof VoicePaymentCancelSchema>;

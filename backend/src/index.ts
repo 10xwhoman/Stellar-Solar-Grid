@@ -58,6 +58,8 @@ import forecastRouter from "./routes/forecast.js";
 import { competitionsRouter } from "./routes/competitions.js";
 import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
+import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
+import { startVoiceTokenPruner, stopVoiceTokenPruner } from "./lib/voiceAssistant.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import arbitrageBotRouter from "./routes/arbitrageBot.js";
 import { startBillingScheduler } from "./lib/billing.js";
@@ -79,7 +81,7 @@ import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
 import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
-import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
+import { readLimiter, writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { globalRateLimiter } from "./middleware/globalRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
@@ -219,6 +221,10 @@ app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/communities", communitiesRouter);
 app.use("/api/smart-home", smartHomeRouter);
+// #989: voice assistant (Alexa / Google Assistant) skill endpoints
+app.use("/api/voice", readLimiter, voiceAssistantRouter);
+app.use("/api/voice/payments", writeLimiter, voiceAssistantRouter);
+startVoiceTokenPruner();
 app.use("/api/forecast", forecastRouter);
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
@@ -326,7 +332,7 @@ httpServer.listen(port, () => {
   startRecommendationWorker();
 });
 
-export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);

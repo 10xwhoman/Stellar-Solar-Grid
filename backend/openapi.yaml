@@ -322,6 +322,100 @@ components:
           type: integer
           description: Revenue share in basis points (100 = 1%)
 
+    # ── Voice Assistant ───────────────────────────────────────────────────────
+
+    VoiceParseRequest:
+      type: object
+      description: Natural-language utterance from an Alexa or Google Assistant skill.
+      required: [utterance]
+      properties:
+        utterance:
+          type: string
+          maxLength: 500
+          description: Raw spoken text transcribed by the voice assistant
+          example: "how much balance is left on meter MTR-001"
+        locale:
+          type: string
+          description: BCP-47 locale tag used for multi-language parsing
+          default: en-US
+          example: en-US
+        platform:
+          type: string
+          enum: [alexa, google]
+          description: Originating voice assistant platform
+        sessionId:
+          type: string
+          description: Opaque assistant session identifier for multi-turn flows
+
+    VoiceParseResponse:
+      type: object
+      description: Structured interpretation of a voice utterance.
+      required: [intent, slots, confidence, locale]
+      properties:
+        intent:
+          type: string
+          enum: [check_balance, check_usage, make_payment, confirm_payment, cancel_payment, unknown]
+          description: Recognised user intent
+        slots:
+          type: object
+          description: Extracted entities (e.g. meterId, amountStroops)
+          additionalProperties: true
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Parser confidence score for the recognised intent
+        locale:
+          type: string
+          description: Locale the utterance was parsed in
+          example: en-US
+        speech:
+          type: string
+          description: Optional assistant-ready spoken response
+
+    VoicePaymentConfirmRequest:
+      type: object
+      description: Confirmation of a pending voice-initiated payment.
+      required: [meterId, amountStroops]
+      properties:
+        meterId:
+          type: string
+          maxLength: 64
+          description: Meter the payment applies to
+        amountStroops:
+          type: integer
+          minimum: 1
+          description: Payment amount in stroops (1 XLM = 10^7 stroops)
+        plan:
+          type: string
+          enum: [Daily, Weekly, UsageBased]
+          default: Daily
+        confirmationCode:
+          type: string
+          description: One-time code spoken by the user to authorise the payment
+        locale:
+          type: string
+          default: en-US
+
+    VoicePaymentConfirmResponse:
+      type: object
+      description: Result of a confirmed voice payment.
+      required: [hash, meterId, amountStroops]
+      properties:
+        hash:
+          type: string
+          description: Stellar transaction hash
+        meterId:
+          type: string
+        amountStroops:
+          type: integer
+        status:
+          type: string
+          enum: [submitted, confirmed]
+        speech:
+          type: string
+          description: Assistant-ready confirmation message
+
   # ── Shared response components ──────────────────────────────────────────────
 
   responses:
@@ -1452,6 +1546,110 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           description: Event not found or not in dead-letter state
+
+  # ── Voice Assistant ───────────────────────────────────────────────────────────
+
+  /api/voice/parse:
+    post:
+      summary: Parse a natural-language voice utterance
+      description: |
+        Interprets an Alexa or Google Assistant utterance and returns the
+        recognised intent, extracted slots, confidence and locale.  Used by the
+        voice skills to resolve commands such as "check my balance",
+        "how much energy have I used" and "pay 5 XLM on meter MTR-001".
+      operationId: parseVoiceUtterance
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoiceParseRequest"
+      responses:
+        "200":
+          description: Parsed intent and slots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceParseResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/voice/payment/confirm:
+    post:
+      summary: Confirm a pending voice-initiated payment
+      description: |
+        Executes a payment previously proposed by the voice assistant after the
+        user has verbally confirmed it.  Requires the one-time confirmation code
+        issued during the proposal step.
+      operationId: confirmVoicePayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoicePaymentConfirmRequest"
+      responses:
+        "200":
+          description: Payment submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoicePaymentConfirmResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/voice/payment/cancel:
+    post:
+      summary: Cancel a pending voice-initiated payment
+      description: |
+        Discards a payment proposal created by the voice assistant so it can no
+        longer be confirmed.  Safe to call when no proposal is pending.
+      operationId: cancelVoicePayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId]
+              properties:
+                meterId:
+                  type: string
+                  maxLength: 64
+                sessionId:
+                  type: string
+      responses:
+        "200":
+          description: Proposal cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled: { type: boolean }
+                  meterId: { type: string }
+                  speech: { type: string }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   # ── Metrics ───────────────────────────────────────────────────────────────────
 
