@@ -8,6 +8,7 @@ use soroban_sdk::{
 };
 
 mod certificates;
+mod insurance;
 mod multi_asset;
 mod leases;
 mod recs;
@@ -16,6 +17,7 @@ mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
+pub use insurance::{ClaimStatus, InsuranceClaim, InsurancePolicy};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
 pub use leases::{LeaseAgreement, LeaseStatus};
 pub use recs::{
