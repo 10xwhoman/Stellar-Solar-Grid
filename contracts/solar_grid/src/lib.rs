@@ -128,6 +128,16 @@ pub enum ContractError {
     InvalidRecQuantity = 71,
     /// A registry or attestation reference is required.
     ComplianceRefMissing = 72,
+    /// No installment plan exists with the given id (#987).
+    InstallmentPlanNotFound = 73,
+    /// Installment plan parameters are invalid (bad total/installments/amount).
+    InvalidInstallmentPlan = 74,
+    /// The next installment is not due yet.
+    InstallmentNotDue = 75,
+    /// The installment plan has defaulted.
+    InstallmentPlanDefaulted = 76,
+    /// The installment plan has already been completed.
+    InstallmentPlanCompleted = 77,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -176,6 +186,12 @@ const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
 const ADMIN_TRANSFER_TTL: u64 = 7 * SECONDS_PER_DAY;
+/// Sequential counter for installment plans (#987).
+const PLAN_COUNT: Symbol = symbol_short!("PLAN_CNT");
+/// Billing interval between installments: 30 days (#987).
+const INSTALLMENT_INTERVAL_SECS: u64 = 30 * SECONDS_PER_DAY;
+/// Maximum number of installments allowed per plan (#987).
+const MAX_INSTALLMENTS: u32 = 60;
 /// Max number of metadata key-value pairs per meter (Issue #691).
 const MAX_METADATA_PAIRS: u32 = 10;
 /// Max characters per metadata value (Issue #691).
@@ -574,6 +590,10 @@ pub enum DataKey {
     ReferralCredit(Address),
     /// Referral statistics for a referrer (Issue #831).
     ReferralStats(Address),
+    /// An installment payment plan keyed by its sequential id (#987).
+    InstallmentPlan(u64),
+    /// List of installment plan ids belonging to a payer (#987).
+    PayerInstallments(Address),
 }
 
 #[contracttype]
@@ -593,6 +613,33 @@ pub struct GroupStats { pub meter_count: u32, pub active_count: u32, pub total_u
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferralStats { pub referred_count: u32, pub total_credits: i128 }
+
+/// Lifecycle state of an installment payment plan (#987).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstallmentStatus {
+    Active,
+    Completed,
+    Defaulted,
+}
+
+/// A scheduled installment payment plan for a large meter purchase or
+/// upgrade (#987). The payer is debited `installment_amount` every 30 days
+/// until `remaining` reaches zero, at which point the plan is Completed.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstallmentPlan {
+    pub payer: Address,
+    pub meter_id: String,
+    pub total: i128,
+    pub paid: i128,
+    pub remaining: i128,
+    pub installments: u32,
+    pub installment_amount: i128,
+    pub next_due: u64,
+    pub grace_secs: u64,
+    pub status: InstallmentStatus,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -3953,6 +4000,201 @@ impl SolarGridContract {
     pub fn set_referrer(env: Env, referred: Address, referrer: Address) -> Result<(), ContractError> { referred.require_auth(); if referred == referrer || env.storage().persistent().has(&DataKey::Referrer(referred.clone())) { return Err(ContractError::InvalidReferral); } env.storage().persistent().set(&DataKey::Referrer(referred), &referrer); let key = DataKey::ReferralStats(referrer); let mut stats: ReferralStats = env.storage().persistent().get(&key).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }); stats.referred_count = stats.referred_count.saturating_add(1); env.storage().persistent().set(&key, &stats); Ok(()) }
     pub fn get_referral_stats(env: Env, user: Address) -> ReferralStats { env.storage().persistent().get(&DataKey::ReferralStats(user)).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }) }
     pub fn get_referral_credit(env: Env, user: Address) -> i128 { env.storage().persistent().get(&DataKey::ReferralCredit(user)).unwrap_or(0) }
+
+    // ── Issue #987: installment payment plans ────────────────────────────────
+
+    /// Create a new installment payment plan for a large meter purchase or
+    /// upgrade (#987).
+    ///
+    /// Validates `total > 0` and `installments` in `1..=MAX_INSTALLMENTS`,
+    /// computes `installment_amount = total / installments` with any remainder
+    /// folded into the first installment, sets `next_due = now + 30 days`,
+    /// requires the payer's authorization, stores the plan, appends its id to
+    /// the payer's list, and emits an `InstallmentCreated` event.
+    pub fn create_installment_plan(
+        env: Env,
+        meter_id: String,
+        payer: Address,
+        total: i128,
+        installments: u32,
+        grace_secs: u64,
+    ) -> Result<u64, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&FROZEN)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractFrozen);
+        }
+        if total <= 0 || installments == 0 || installments > MAX_INSTALLMENTS {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+        payer.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
+        let plan_id: u64 = env.storage().instance().get(&PLAN_COUNT).unwrap_or(0);
+        env.storage().instance().set(&PLAN_COUNT, &(plan_id + 1));
+
+        let installment_amount = total / i128::from(installments);
+        if installment_amount <= 0 {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+        let now = env.ledger().timestamp();
+        let plan = InstallmentPlan {
+            payer: payer.clone(),
+            meter_id: meter_id.clone(),
+            total,
+            paid: 0,
+            remaining: total,
+            installments,
+            installment_amount,
+            next_due: now.saturating_add(INSTALLMENT_INTERVAL_SECS),
+            grace_secs,
+            status: InstallmentStatus::Active,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::InstallmentPlan(plan_id), &plan);
+
+        let list_key = DataKey::PayerInstallments(payer.clone());
+        let mut list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or_else(|| vec![&env]);
+        list.push_back(plan_id);
+        env.storage().persistent().set(&list_key, &list);
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        env.events().publish(
+            (EVT_NS, symbol_short!("inst_new"), plan_id),
+            (payer, meter_id, total, installments, installment_amount),
+        );
+        Ok(plan_id)
+    }
+
+    /// Pay the next due installment on a plan (#987).
+    ///
+    /// Requires the payer's authorization, rejects plans that are not Active,
+    /// rejects calls made before `next_due`, debits `installment_amount` from
+    /// the payer's token balance into the contract, advances `next_due` by 30
+    /// days, and marks the plan Completed (emitting `InstallmentPaid`) once
+    /// `remaining` reaches zero.
+    pub fn pay_installment(env: Env, plan_id: u64) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&FROZEN)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractFrozen);
+        }
+        let key = DataKey::InstallmentPlan(plan_id);
+        let mut plan: InstallmentPlan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::InstallmentPlanNotFound)?;
+        match plan.status {
+            InstallmentStatus::Active => {}
+            InstallmentStatus::Completed => return Err(ContractError::InstallmentPlanCompleted),
+            InstallmentStatus::Defaulted => return Err(ContractError::InstallmentPlanDefaulted),
+        }
+        plan.payer.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let now = env.ledger().timestamp();
+        if now < plan.next_due {
+            return Err(ContractError::InstallmentNotDue);
+        }
+
+        // The final installment settles whatever remains, absorbing any
+        // rounding remainder folded into the first installment.
+        let amount = if plan.remaining <= plan.installment_amount {
+            plan.remaining
+        } else {
+            plan.installment_amount
+        };
+        if amount <= 0 {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+
+        let token_address = Self::get_token_address(&env)?;
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
+        plan.paid = plan.paid.saturating_add(amount);
+        plan.remaining = plan.remaining.saturating_sub(amount);
+        plan.next_due = plan.next_due.saturating_add(INSTALLMENT_INTERVAL_SECS);
+        if plan.remaining == 0 {
+            plan.status = InstallmentStatus::Completed;
+        }
+        env.storage().persistent().set(&key, &plan);
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&plan.payer, env.current_contract_address(), &amount);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("inst_paid"), plan_id),
+            (plan.payer.clone(), amount, plan.paid, plan.remaining),
+        );
+        Ok(())
+    }
+
+    /// Admin/oracle-only batch that attempts each due installment and marks
+    /// any plan past `next_due + grace_secs` as Defaulted (#987).
+    pub fn process_due_installments(
+        env: Env,
+        plan_ids: Vec<u64>,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let now = env.ledger().timestamp();
+        for plan_id in plan_ids.iter() {
+            let key = DataKey::InstallmentPlan(plan_id);
+            let mut plan: InstallmentPlan = match env.storage().persistent().get(&key) {
+                Some(p) => p,
+                None => continue,
+            };
+            if plan.status != InstallmentStatus::Active {
+                continue;
+            }
+            if now > plan.next_due.saturating_add(plan.grace_secs) {
+                plan.status = InstallmentStatus::Defaulted;
+                let missed_amount = plan.remaining;
+                let next_due = plan.next_due;
+                env.storage().persistent().set(&key, &plan);
+                env.events().publish(
+                    (EVT_NS, symbol_short!("inst_dflt"), plan_id),
+                    (plan.payer.clone(), missed_amount, next_due),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Read an installment plan by id (#987).
+    pub fn get_installment_plan(env: Env, plan_id: u64) -> Result<InstallmentPlan, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InstallmentPlan(plan_id))
+            .ok_or(ContractError::InstallmentPlanNotFound)
+    }
+
+    /// Read the list of installment plan ids belonging to a payer (#987).
+    pub fn get_payer_installments(env: Env, payer: Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PayerInstallments(payer))
+            .unwrap_or_else(|| vec![&env])
+    }
     /// Migrate a v0 (LegacyMeter) entry to the current schema. Admin-only.
     pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "migrate_meter", "contract")?;

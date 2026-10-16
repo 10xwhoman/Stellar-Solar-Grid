@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import Navbar from "@/components/Navbar";
 import OfflinePaymentModal from "@/components/OfflinePaymentModal";
+import InstallmentCalculator from "@/components/InstallmentCalculator";
+import InstallmentTracker from "@/components/InstallmentTracker";
 import { useToast } from "@/components/ToastProvider";
 import { useWalletStore } from "@/store/walletStore";
 import { usePaymentStore } from "@/store/paymentStore";
@@ -13,6 +15,7 @@ import { env } from "@/lib/env";
 
 type Plan = "Daily" | "Weekly" | "Monthly" | "Usage";
 type Status = "idle" | "loading";
+type PaymentMode = "one-off" | "installment";
 
 const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Daily", label: "Daily", desc: "Billed every 24 hours" },
@@ -63,6 +66,8 @@ export default function PayPage() {
   const [xlmRate, setXlmRate] = useState<number | null>(null);
   const [currency, setCurrency] = useState("NGN");
   const [txHash, setTxHash] = useState<string | null>(null);
+  // Issue #987: toggle between one-off payments and installment plans.
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>("one-off");
 
   // #902: bill emails link here with ?meter=&amount=&bill= — pre-fill the form.
   useEffect(() => {
@@ -238,6 +243,32 @@ export default function PayPage() {
             Top up your meter balance on the Stellar blockchain.
           </p>
 
+          {/* ── Payment mode toggle ── */}
+          <div className="mb-6 grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-solar-accent p-1">
+            <button
+              type="button"
+              onClick={() => setPaymentMode("one-off")}
+              className={`rounded-lg px-3 py-2.5 text-sm font-semibold transition ${
+                paymentMode === "one-off"
+                  ? "bg-solar-yellow text-solar-dark"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              One-off Payment
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaymentMode("installment")}
+              className={`rounded-lg px-3 py-2.5 text-sm font-semibold transition ${
+                paymentMode === "installment"
+                  ? "bg-solar-yellow text-solar-dark"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              Installment Plan
+            </button>
+          </div>
+
           {/* ── SMS fallback card — shown when offline ── */}
           {isOffline && (
             <div className="mb-6 rounded-xl border border-yellow-500/30 bg-yellow-900/10 p-5">
@@ -275,7 +306,12 @@ export default function PayPage() {
             </div>
           )}
 
-          {!address ? (
+          {paymentMode === "installment" ? (
+            <div className="space-y-6">
+              <InstallmentCalculator meterId={meterId} />
+              {address && <InstallmentTracker address={address} />}
+            </div>
+          ) : !address ? (
             <div className="rounded-xl border border-white/10 bg-solar-accent p-8 text-center">
               <p className="text-gray-400 mb-4">Connect your wallet to make a payment.</p>
               <button

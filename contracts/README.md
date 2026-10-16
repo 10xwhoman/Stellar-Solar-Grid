@@ -265,6 +265,101 @@ Events (`solar`, …): `stk_cfg`, `stk_fund`, `staked`, `unstk_req`, `unstaked`,
 New errors: `StakingNotConfigured` (38), `InsufficientStake` (39),
 `NoPendingUnstake` (40), `CooldownNotElapsed` (41).
 
+## Installment Payment Plans (#987)
+
+Lets users pay for large meter purchases or upgrades in installments. Plans are
+tracked on-chain and installments are deducted automatically from the payer's
+meter balance on a fixed cadence.
+
+### `InstallmentPlan` struct
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `u64` | Sequential plan id (0-based) |
+| `payer` | `Address` | Account responsible for the installments |
+| `meter_id` | `String` | Meter the plan is attached to |
+| `total` | `i128` | Total amount owed under the plan |
+| `paid` | `i128` | Amount paid so far |
+| `remaining` | `i128` | Amount still owed (`total - paid`) |
+| `installment_amount` | `i128` | Amount deducted per installment |
+| `next_due` | `u64` | Unix timestamp of the next due installment |
+| `installments_total` | `u32` | Number of installments in the schedule |
+| `installments_paid` | `u32` | Number of installments paid so far |
+| `grace_secs` | `u64` | Grace window after `next_due` before default |
+| `status` | `InstallmentStatus` | `Active`, `Completed`, or `Defaulted` |
+| `created_at` | `u64` | Unix timestamp the plan was created |
+
+### Entrypoints
+
+#### `create_installment_plan(payer, meter_id, total, installments, grace_secs) -> u64`
+
+Creates a plan for `payer` on `meter_id`, splitting `total` into `installments`
+equal monthly installments (the final installment absorbs any rounding
+remainder). Requires `payer`'s authorization. Returns the new plan id.
+
+Errors: `ContractError::InvalidInstallmentPlan` (total ≤ 0, `installments == 0`,
+or `installments > MAX_INSTALLMENTS`), `ContractError::MeterNotFound`.
+
+#### `pay_installment(plan_id)`
+
+Deducts the next installment from the payer's meter balance and advances the
+schedule by 30 days. Requires the payer's authorization. If the balance is
+insufficient the call fails with `ContractError::InsufficientBalance` and the
+plan is left untouched. Completing the final installment sets `status` to
+`Completed` and emits `InstallmentPaid`.
+
+Errors: `ContractError::InstallmentPlanNotFound`,
+`ContractError::InstallmentPlanNotActive`,
+`ContractError::InsufficientBalance`.
+
+#### `process_due_installments()`
+
+Permissionless sweeper that walks all active plans whose `next_due` has passed
+and attempts the automatic deduction from each payer's balance. Plans that
+cannot be paid within `next_due + grace_secs` are marked `Defaulted` and emit
+`InstallmentDefaulted`; plans paid successfully emit `InstallmentPaid`. Returns
+the number of plans processed.
+
+#### `get_installment_plan(plan_id) -> InstallmentPlan`
+
+Returns the plan, or `ContractError::InstallmentPlanNotFound`.
+
+#### `get_payer_installments(payer) -> Vec<u64>`
+
+Returns the ids of every plan created by `payer` (active, completed, and
+defaulted).
+
+### Cadence and grace window
+
+Installments are due every **30 days** (`INSTALLMENT_INTERVAL_SECS`). Each plan
+carries its own configurable `grace_secs` window; a missed installment is only
+treated as a default once `next_due + grace_secs` has elapsed. Defaulted plans
+are frozen (`status = Defaulted`) and reject further `pay_installment` calls
+with `ContractError::InstallmentPlanNotActive`.
+
+### Events
+
+- `InstallmentCreated` (`inst_new`) — topics `(solargrid, inst_new, plan_id: u64)`, data `(payer: Address, meter_id: String, total: i128, installments: u32, next_due: u64)`.
+- `InstallmentPaid` (`inst_paid`) — topics `(solargrid, inst_paid, plan_id: u64)`, data `(payer: Address, amount: i128, paid: i128, remaining: i128, installments_paid: u32)`.
+- `InstallmentDefaulted` (`inst_dflt`) — topics `(solargrid, inst_dflt, plan_id: u64)`, data `(payer: Address, remaining: i128, missed_due: u64)`.
+
+### New errors
+
+- `InstallmentPlanNotFound` (60)
+- `InstallmentPlanNotActive` (61)
+- `InvalidInstallmentPlan` (62)
+
+### Tests
+
+- `test_create_installment_plan_splits_total`
+- `test_create_installment_plan_rejects_invalid_input`
+- `test_pay_installment_deducts_balance_and_advances_schedule`
+- `test_pay_installment_insufficient_balance_leaves_plan_untouched`
+- `test_pay_installment_completes_plan`
+- `test_process_due_installments_pays_due_plans`
+- `test_process_due_installments_marks_default_after_grace`
+- `test_get_payer_installments_returns_all_plans`
+
 ## Energy Export Certificates (#871)
 
 Non-fungible certificates attesting that a meter exported renewable energy to

@@ -261,3 +261,69 @@ export function cancelUnstake(staker: string): Promise<string> {
 export function claimStakingRewards(staker: string): Promise<string> {
   return contractInvoke(staker, "claim_staking_rewards", [addrVal(staker)]);
 }
+
+// ── Installment payment plans (#987) ────────────────────────────────────────
+
+/** Mirrors the contract's `InstallmentPlan` struct. */
+export interface InstallmentPlan {
+  plan_id: bigint;
+  payer: string;
+  meter_id: string;
+  total: bigint;
+  paid: bigint;
+  remaining: bigint;
+  installments: number;
+  installment_amount: bigint;
+  /** Unix timestamp (seconds) of the next scheduled deduction. */
+  next_due: bigint;
+  /** Seconds a payment may be late before the plan defaults. */
+  grace_secs: bigint;
+  /** Number of payments missed so far. */
+  missed: number;
+  active: boolean;
+  defaulted: boolean;
+}
+
+const u32Val = (v: number) => StellarSdk.nativeToScVal(v, { type: "u32" });
+const u64Val = (v: bigint) => StellarSdk.nativeToScVal(v, { type: "u64" });
+
+/**
+ * Create an installment plan for a meter purchase/upgrade. `total` is in
+ * stroops; the contract splits it into `installments` automatic monthly
+ * deductions, each allowed to run `graceSecs` late before defaulting.
+ */
+export function createInstallmentPlan(
+  sourceAddress: string,
+  meterId: string,
+  total: bigint,
+  installments: number,
+  graceSecs: bigint,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "create_installment_plan", [
+    addrVal(sourceAddress),
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    i128Val(total),
+    u32Val(installments),
+    u64Val(graceSecs),
+  ]);
+}
+
+/** Manually pay the next installment due on `planId`. */
+export function payInstallment(sourceAddress: string, planId: bigint): Promise<string> {
+  return contractInvoke(sourceAddress, "pay_installment", [
+    addrVal(sourceAddress),
+    u64Val(planId),
+  ]);
+}
+
+/** Fetch a single installment plan by id. */
+export async function fetchInstallmentPlan(planId: bigint): Promise<InstallmentPlan> {
+  const retval = await client.query("get_installment_plan", [u64Val(planId)]);
+  return StellarSdk.scValToNative(retval) as InstallmentPlan;
+}
+
+/** Fetch all installment plans belonging to `payer`. */
+export async function fetchPayerInstallments(payer: string): Promise<InstallmentPlan[]> {
+  const retval = await client.query("get_payer_installments", [addrVal(payer)]);
+  return StellarSdk.scValToNative(retval) as InstallmentPlan[];
+}

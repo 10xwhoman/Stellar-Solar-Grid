@@ -21,6 +21,19 @@ const PaymentSchema = z.object({
   memo: z.string().max(100).optional(),
 });
 
+// Issue #987: installment payment plans.
+const InstallmentPlanSchema = z.object({
+  meterId: z.string().min(1).max(64),
+  payer: z.string().length(56),
+  total: z.number().int().positive(),
+  installments: z.number().int().positive().max(120),
+  graceSecs: z.number().int().nonnegative().optional(),
+});
+
+const ProcessDueSchema = z.object({
+  planIds: z.array(z.number().int().nonnegative()).min(1).max(200),
+});
+
 interface IdempotencyRecord {
   hash: string;
   createdAt: number;
@@ -145,6 +158,188 @@ paymentsRouter.post(
     })();
 
     return res.json({ hash });
+  }),
+);
+
+// ── Installment plans (Issue #987) ────────────────────────────────────────────
+
+/**
+ * POST /api/payments/installments
+ *
+ * Creates an installment plan for a meter purchase/upgrade. The contract
+ * tracks total/paid/remaining and the payment schedule, and deducts each
+ * installment automatically once due.
+ */
+paymentsRouter.post(
+  "/installments",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const parsed = InstallmentPlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { meterId, payer, total, installments, graceSecs } = parsed.data;
+
+    try {
+      const hash = await adminInvoke("create_installment_plan", [
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        StellarSdk.nativeToScVal(payer, { type: "address" }),
+        StellarSdk.nativeToScVal(BigInt(total), { type: "i128" }),
+        StellarSdk.nativeToScVal(installments, { type: "u32" }),
+        graceSecs === undefined
+          ? StellarSdk.xdr.ScVal.scvVoid()
+          : StellarSdk.nativeToScVal(graceSecs, { type: "u64" }),
+      ]);
+
+      const planId = await stellarService.query("get_payer_installments", [
+        StellarSdk.nativeToScVal(payer, { type: "address" }),
+      ]);
+
+      logger.info("Created installment plan", { meterId, payer, total, installments, hash });
+
+      return res.json({ hash, planId });
+    } catch (err: any) {
+      logger.error("create_installment_plan error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to create installment plan" });
+    }
+  }),
+);
+
+/**
+ * GET /api/payments/installments/payer/:address
+ *
+ * Returns the plan ids belonging to a payer.
+ */
+paymentsRouter.get(
+  "/installments/payer/:address",
+  asyncHandler(async (req, res) => {
+    const rawAddress = req.params.address;
+    const address = Array.isArray(rawAddress) ? rawAddress[0] : rawAddress;
+    if (typeof address !== "string" || address.trim().length === 0) {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+    try {
+      StellarSdk.StrKey.decodeEd25519PublicKey(address);
+    } catch {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+
+    try {
+      const planIds = await stellarService.query("get_payer_installments", [
+        StellarSdk.nativeToScVal(address, { type: "address" }),
+      ]);
+      return res.json({ address, planIds });
+    } catch (err: any) {
+      logger.error("get_payer_installments error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch payer installments" });
+    }
+  }),
+);
+
+/**
+ * POST /api/payments/installments/process-due
+ *
+ * Admin-only: processes the given plans, deducting any due installments and
+ * flagging defaults where payments were missed past the grace period.
+ */
+paymentsRouter.post(
+  "/installments/process-due",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const parsed = ProcessDueSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { planIds } = parsed.data;
+
+    try {
+      const hash = await adminInvoke("process_due_installments", [
+        StellarSdk.nativeToScVal(planIds, { type: "u32" }),
+      ]);
+      logger.info("Processed due installments", { planIds, hash });
+      return res.json({ hash });
+    } catch (err: any) {
+      logger.error("process_due_installments error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to process due installments" });
+    }
+  }),
+);
+
+/**
+ * GET /api/payments/installments/:planId
+ *
+ * Returns the current state of an installment plan.
+ */
+paymentsRouter.get(
+  "/installments/:planId",
+  asyncHandler(async (req, res) => {
+    const planId = Number(req.params.planId);
+    if (!Number.isInteger(planId) || planId < 0) {
+      return res.status(400).json({ error: "Invalid planId" });
+    }
+
+    try {
+      const plan = await stellarService.query("get_installment_plan", [
+        StellarSdk.nativeToScVal(planId, { type: "u32" }),
+      ]);
+      if (plan === null || plan === undefined) {
+        return res.status(404).json({ error: "Installment plan not found" });
+      }
+      return res.json({ plan });
+    } catch (err: any) {
+      logger.error("get_installment_plan error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch installment plan" });
+    }
+  }),
+);
+
+/**
+ * POST /api/payments/installments/:planId/pay
+ *
+ * Pays the next due installment for a plan.
+ */
+paymentsRouter.post(
+  "/installments/:planId/pay",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const planId = Number(req.params.planId);
+    if (!Number.isInteger(planId) || planId < 0) {
+      return res.status(400).json({ error: "Invalid planId" });
+    }
+
+    try {
+      const hash = await adminInvoke("pay_installment", [
+        StellarSdk.nativeToScVal(planId, { type: "u32" }),
+      ]);
+      logger.info("Paid installment", { planId, hash });
+      return res.json({ hash });
+    } catch (err: any) {
+      logger.error("pay_installment error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to pay installment" });
+    }
   }),
 );
 
