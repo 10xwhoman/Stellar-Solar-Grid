@@ -216,6 +216,9 @@
     "accept": "Accept",
     "dismiss": "Dismiss",
     "estimatedSavings": "Estimated weekly savings",
-    "actualSavings": "Actual weekly savings"
+    "actualSavings": "Actual weekly savings",
+    "priority": "Priority",
+    "potentialSavings": "Potential savings: {kwh} kWh/week",
+    "impact": "Measured impact"
   }
 }

@@ -309,6 +309,61 @@ components:
           type: string
           nullable: true
 
+    # ── Maintenance ───────────────────────────────────────────────────────────
+
+    MaintenanceWindow:
+      type: object
+      description: A scheduled maintenance window (#979)
+      required: [id, title, description, scheduledStart, scheduledEnd, status, affectedMeters, createdAt]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        scheduledStart:
+          type: string
+          format: date-time
+        scheduledEnd:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [scheduled, in_progress, completed, cancelled]
+        affectedMeters:
+          type: array
+          description: Meter ids impacted by this maintenance window
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateMaintenanceWindowRequest:
+      type: object
+      required: [title, scheduledStart, scheduledEnd]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        scheduledStart:
+          type: string
+          format: date-time
+        scheduledEnd:
+          type: string
+          format: date-time
+        affectedMeters:
+          type: array
+          description: Meter ids impacted by this maintenance window
+          items:
+            type: string
+
     # ── Collaborator ──────────────────────────────────────────────────────────
 
     CollaboratorShare:
@@ -1482,6 +1537,129 @@ paths:
         "200":
           description: Prometheus metrics text
 
+  # ── Maintenance ───────────────────────────────────────────────────────────────
+
+  /api/maintenance:
+    post:
+      summary: Create a scheduled maintenance window (admin only)
+      description: |
+        Schedules a maintenance window and records the meters it affects.
+        Notification emails are dispatched automatically 48 hours, 24 hours,
+        and 1 hour before `scheduledStart`.
+      operationId: createMaintenanceWindow
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMaintenanceWindowRequest"
+      responses:
+        "201":
+          description: Maintenance window created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindow"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/maintenance/upcoming:
+    get:
+      summary: List scheduled maintenance windows
+      description: >
+        Returns maintenance windows whose `scheduledEnd` is in the future,
+        ordered by `scheduledStart` ascending.
+      operationId: getUpcomingMaintenance
+      responses:
+        "200":
+          description: Upcoming maintenance windows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [windows, count]
+                properties:
+                  windows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MaintenanceWindow"
+                  count:
+                    type: integer
+
+  /api/maintenance/active:
+    get:
+      summary: Get the currently active maintenance window
+      description: >
+        Returns the maintenance window covering the current time, or `null`
+        when no maintenance is in progress. Used by the frontend to render
+        the maintenance banner.
+      operationId: getActiveMaintenance
+      responses:
+        "200":
+          description: Active maintenance window or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [window]
+                properties:
+                  window:
+                    oneOf:
+                      - $ref: "#/components/schemas/MaintenanceWindow"
+                      - type: "null"
+
+  /api/maintenance/{id}:
+    get:
+      summary: Get a maintenance window by id
+      operationId: getMaintenanceWindow
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Maintenance window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindow"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Cancel a maintenance window (admin only)
+      operationId: deleteMaintenanceWindow
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Maintenance window cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Solar ─────────────────────────────────────────────────────────────────────
+
+  /api/solar/forecast:
+=======
   # ── Solar ─────────────────────────────────────────────────────────────────────
 
   /api/solar/forecast:

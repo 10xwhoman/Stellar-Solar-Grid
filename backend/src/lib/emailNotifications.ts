@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
 import { sendEmail, type EmailAttachment, type EmailResult } from "./mailer.js";
 
-export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing"] as const;
+export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing", "maintenance"] as const;
 export type EmailEvent = (typeof EMAIL_EVENTS)[number];
 
 const DB_PATH = process.env.EMAIL_PREFERENCES_DB_PATH ?? path.resolve(process.cwd(), "data", "email-preferences.sqlite");

@@ -10,6 +10,8 @@
 
 import { handleHeartbeatMessage } from "../lib/meterHealth.js";
 import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
+import { handleBatteryTelemetry } from "../lib/battery.js";
+import { handleFirmwareStatusMessage } from "../lib/firmware.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -38,6 +40,10 @@ const TOPIC = "solargrid/meters/+/usage";
 const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
 // Issue #897: registered devices (panels, inverters, meters) publish performance telemetry here.
 const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
+// Issue #980: meters publish battery voltage/current/SOC telemetry here.
+const BATTERY_TOPIC = "solargrid/meters/+/battery";
+// Issue #985: meters report OTA firmware update status here.
+const FIRMWARE_TOPIC = "solargrid/meters/+/firmware";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
@@ -517,6 +523,14 @@ function startMqttBridge() {
     client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
       if (err) logger.error("MQTT device telemetry subscribe error", { err });
     });
+    // Issue #980: battery telemetry (voltage, current, SOC).
+    client.subscribe(BATTERY_TOPIC, { qos: 1 }, (err) => {
+      if (err) logger.error("MQTT battery telemetry subscribe error", { err });
+    });
+    // Issue #985: OTA firmware update status reports.
+    client.subscribe(FIRMWARE_TOPIC, { qos: 1 }, (err) => {
+      if (err) logger.error("MQTT firmware status subscribe error", { err });
+    });
   });
 
   client.on("message", async (topic, payload) => {
@@ -525,6 +539,22 @@ function startMqttBridge() {
     mqttMessages.inc({ topic: labelTopic });
     if (segments[3] === "heartbeat") {
       handleHeartbeatMessage(segments[2], payload);
+      return;
+    }
+    if (segments[3] === "battery") {
+      try {
+        handleBatteryTelemetry(segments[2], payload);
+      } catch (err) {
+        logger.error("Battery telemetry handling failed", { topic, err });
+      }
+      return;
+    }
+    if (segments[3] === "firmware") {
+      try {
+        await handleFirmwareStatusMessage(segments[2], payload);
+      } catch (err) {
+        logger.error("Firmware status handling failed", { topic, err });
+      }
       return;
     }
     if (handleDeviceTelemetryTopic(topic, payload)) return;

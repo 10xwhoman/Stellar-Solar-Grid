@@ -368,3 +368,82 @@ Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`
 See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.
+
+## Scheduled Maintenance Windows (#979)
+
+Maintenance windows are stored in the `maintenance_windows` table (`id`,
+`title`, `description`, `starts_at`, `ends_at`, `affected_meters`, `status`,
+`created_at`, …). `affected_meters` is a JSON array of meter IDs impacted by
+the window; an empty array means the maintenance is platform-wide. Windows are
+created with `status: "scheduled"` and transition to `"active"` while the
+current time is between `starts_at` and `ends_at`, and to `"completed"` after
+`ends_at`.
+
+### `POST /api/maintenance`
+
+Creates a maintenance window. Requires the admin session or `X-Admin-Key`.
+
+Request body:
+
+```json
+{
+  "title": "Substation upgrade",
+  "description": "Replacing the feeder transformer.",
+  "startsAt": "2026-10-01T02:00:00.000Z",
+  "endsAt": "2026-10-01T05:00:00.000Z",
+  "affectedMeters": ["METER1", "METER2"]
+}
+```
+
+`201` → the created window:
+
+```json
+{
+  "id": "mw_01H...",
+  "title": "Substation upgrade",
+  "description": "Replacing the feeder transformer.",
+  "startsAt": "2026-10-01T02:00:00.000Z",
+  "endsAt": "2026-10-01T05:00:00.000Z",
+  "affectedMeters": ["METER1", "METER2"],
+  "status": "scheduled",
+  "createdAt": "2026-09-28T12:00:00.000Z"
+}
+```
+
+`400` when `title`, `startsAt`, or `endsAt` is missing, when `endsAt` is not
+after `startsAt`, or when `affectedMeters` is not an array of strings.
+
+### `GET /api/maintenance/upcoming`
+
+Lists scheduled windows whose `ends_at` is in the future, ordered by
+`starts_at` ascending. Optional `?limit=` (default 20, max 100).
+
+```json
+{ "windows": [ { "id": "mw_01H...", "status": "scheduled", "affectedMeters": ["METER1"] } ] }
+```
+
+### `GET /api/maintenance/active`
+
+Lists windows currently in progress (`starts_at <= now < ends_at`). The
+frontend polls this route to decide whether to show the maintenance banner.
+
+```json
+{ "windows": [ { "id": "mw_01H...", "status": "active", "affectedMeters": ["METER1"] } ] }
+```
+
+### `GET /api/maintenance/:id`
+
+Returns a single window, or `404` if it does not exist.
+
+### `DELETE /api/maintenance/:id`
+
+Cancels a window. `204` on success, `404` if not found.
+
+### Email notifications
+
+Subscribers receive reminder emails **48 hours**, **24 hours**, and **1 hour**
+before `starts_at`. Reminders are sent once per window per interval; the
+scheduler checks pending reminders at `MAINTENANCE_REMINDER_INTERVAL_MS`
+(default one minute) and skips windows that have already started. Delivery
+uses the configured email provider (see Issue #882); the `log` provider does
+not deliver mail.

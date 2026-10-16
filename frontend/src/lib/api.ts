@@ -74,3 +74,64 @@ export async function getPaymentHistory(filters: PaymentHistoryFilters = {}): Pr
   const { payments } = (await res.json()) as { payments: PaymentRecord[] };
   return payments;
 }
+
+export type MaintenanceStatus = "scheduled" | "in_progress" | "completed" | "cancelled";
+
+export interface MaintenanceWindow {
+  id: string;
+  title: string;
+  description: string;
+  startsAt: string;
+  endsAt: string;
+  affectedMeters: string[];
+  status: MaintenanceStatus;
+}
+
+export async function getUpcomingMaintenance(): Promise<MaintenanceWindow[]> {
+  const res = await fetch(`${API_BASE}/maintenance/upcoming`);
+  if (!res.ok) {
+    const { error } = (await res.json()) as { error: string };
+    throw new Error(error ?? "Failed to fetch upcoming maintenance");
+  }
+  const { maintenance } = (await res.json()) as { maintenance: MaintenanceWindow[] };
+  return maintenance;
+}
+
+export async function getActiveMaintenance(): Promise<MaintenanceWindow[]> {
+  const res = await fetch(`${API_BASE}/maintenance/active`);
+  if (!res.ok) {
+    const { error } = (await res.json()) as { error: string };
+    throw new Error(error ?? "Failed to fetch active maintenance");
+  }
+  const { maintenance } = (await res.json()) as { maintenance: MaintenanceWindow[] };
+  return maintenance;
+}
+
+export async function getMaintenanceWindow(id: string): Promise<MaintenanceWindow> {
+  const res = await fetch(`${API_BASE}/maintenance/${id}`);
+  if (!res.ok) {
+    const { error } = (await res.json()) as { error: string };
+    throw new Error(error ?? "Failed to fetch maintenance window");
+  }
+  const { maintenance } = (await res.json()) as { maintenance: MaintenanceWindow };
+  return maintenance;
+}
+
+export interface BatteryStats {
+  voltageV: number;
+  currentA: number;
+  stateOfCharge: number;
+  healthPct: number;
+  cycleCount: number;
+  predictedReplacementDate: string;
+}
+
+export async function getBatteryStats(meterId: string): Promise<BatteryStats> {
+  const res = await fetch(`${API_BASE}/meters/${meterId}/battery`);
+  if (!res.ok) {
+    const { error } = (await res.json()) as { error: string };
+    throw new Error(error ?? "Failed to fetch battery stats");
+  }
+  const { battery } = (await res.json()) as { battery: BatteryStats };
+  return battery;
+}

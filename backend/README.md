@@ -52,3 +52,61 @@ Endpoints:
 - `POST /api/meters/:meterId/heartbeat` — record a heartbeat over HTTP
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
+
+## Energy Storage Battery Integration (#980)
+
+Meters with an attached battery publish telemetry to
+`solargrid/meters/{meterId}/battery` (or POST to
+`/api/meters/:meterId/battery`). The JSON payload reports the raw battery
+measurements:
+
+```json
+{
+  "voltage": 51.2,
+  "current": 12.5,
+  "stateOfCharge": 87.5
+}
+```
+
+| Field           | Description                                              |
+|-----------------|----------------------------------------------------------|
+| `voltage`       | Battery voltage in volts                                 |
+| `current`       | Battery current in amps (positive = charging)            |
+| `stateOfCharge` | State of charge as a percentage (0–100)                  |
+
+### Battery Analytics
+
+The backend derives health and cycle information from the reported
+telemetry:
+
+- **State of charge (SOC)** — the latest reported charge level, expressed as a
+  percentage of capacity.
+- **Capacity** — the usable capacity in kWh, tracked per meter.
+- **Health** — the ratio of current usable capacity to the original rated
+  capacity, expressed as a percentage. A new battery reports 100% health.
+- **Cycles** — the number of equivalent full charge/discharge cycles,
+  accumulated from the charge throughput reported by the meter.
+
+### Battery Endpoint
+
+- `GET /api/meters/:meterId/battery` — returns the battery stats for a meter:
+  charge level (SOC), capacity, health percentage, cycle count, and the
+  predicted replacement date.
+
+### Degradation Alert
+
+When battery health degrades below **80%**, the backend logs a degradation
+alert for the meter so operators can plan a replacement.
+
+### Replacement Date Prediction
+
+The backend extrapolates the observed health degradation rate over time to
+predict a **battery replacement date** — the date at which health is expected
+to fall below the replacement threshold. The prediction is included in the
+`GET /api/meters/:meterId/battery` response.
+
+### Tests
+
+Battery monitoring (telemetry ingestion, health/cycle calculation, the
+below-80% degradation alert, and replacement date prediction) is covered by
+the backend test suite.

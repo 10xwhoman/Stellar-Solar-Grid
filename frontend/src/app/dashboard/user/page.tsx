@@ -24,6 +24,7 @@ import { env } from "@/lib/env";
 import { formatXLM } from "@/lib/format";
 import PaymentSchedule from "@/components/PaymentSchedule";
 import EnergyDashboardWidget from "@/components/EnergyDashboardWidget";
+import BatteryDashboard from "@/components/BatteryDashboard";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
@@ -622,6 +623,9 @@ function MeterCard({
       <EnergyInsights meterId={meterId} />
 
       <EnergyDashboardWidget meterId={meterId} />
+
+      {/* Battery monitoring (Issue #980) */}
+      <BatteryDashboard meterId={meterId} />
 
       {/* Personalised Recommendations */}
       <Recommendations meterId={meterId} ownerAddress={meter.owner} />

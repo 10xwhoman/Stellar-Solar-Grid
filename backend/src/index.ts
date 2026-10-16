@@ -1,5 +1,4 @@
 import "dotenv/config";
-import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "module";
@@ -25,7 +24,6 @@ import { webhookRouter } from "./routes/webhooks.js";
 import { auditRouter } from "./routes/audit.js";
 import { socialRouter } from "./routes/social.js";
 import { startLeaderboardScheduler } from "./lib/social.js";
-import { startIoTBridge } from "./iot/bridge.js";
 import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
@@ -38,7 +36,6 @@ import { loadBalancingRouter } from "./routes/loadBalancing.js";
 import { twoFactorRouter } from "./routes/twoFactor.js";
 import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
 import { orderBookRouter, attachOrderBookWebSocket } from "./routes/orderBook.js";
-import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { weatherRouter } from "./routes/weather.js";
@@ -110,6 +107,11 @@ import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
+// #979: scheduled maintenance windows
+import { maintenanceRouter } from "./routes/maintenance.js";
+import { startMaintenanceScheduler } from "./lib/maintenance.js";
+// #985: automatic meter firmware updates
+import { firmwareRouter } from "./routes/firmware.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -245,6 +247,13 @@ startResilienceMonitor();
 // #939: energy data privacy controls
 app.use("/api/privacy", writeLimiter, privacyRouter);
 
+// #979: scheduled maintenance windows
+app.use("/api/maintenance", writeLimiter, maintenanceRouter);
+startMaintenanceScheduler();
+
+// #985: automatic meter firmware updates (OTA)
+app.use("/api/firmware", writeLimiter, firmwareRouter);
+
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const mqttUrl = process.env.MQTT_URL || 'mqtt://localhost:1883';
@@ -316,11 +325,10 @@ const httpServer = app.listen(PORT, () => {
 });
 attachTradingWebSocket(httpServer);
 attachOrderBookWebSocket(httpServer);
-const port = Number(process.env.PORT) || 3000;
-const httpServer = createServer(app);
 attachWidgetLiveUpdates(httpServer);
-httpServer.listen(port, () => {
-  console.log(`Backend listening on port ${port}`);
+
+httpServer.listen(PORT, () => {
+  console.log(`Backend listening on port ${PORT}`);
   startTheftMonitor();
   startEventIndexer();
   startRecommendationWorker();
