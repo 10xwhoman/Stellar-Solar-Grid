@@ -296,26 +296,21 @@ period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
 
 New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
 `CertificatePeriodOverlap` (52), `CertificateRetired` (53).
-# Stellar Solar Grid Smart Contracts
 
-## Multi-Signature Admin Operations (#995)
+## Energy credit gifting and subscription boxes (Issues #1018 and #1019)
 
-Critical administrative operations require multi-signature approval across a configured council of admins (supporting `2-of-3` or `3-of-5` thresholds):
+`gift_energy_credit(sender_meter_id, recipient_meter_id, amount, message)` moves
+prepaid credits between registered meters after the sender owner authorizes. It
+rejects non-positive amounts, insufficient balances, unknown meters, and overly
+long messages. It emits `EnergyGifted(sender, recipient, amount)` and
+`get_gift_history(owner)` exposes the sender's history.
 
-### Entrypoints
-
-- `configure_multisig(admins: Vec<Address>, threshold: u32)`: Configures the admin signer set and required approval threshold (`2-of-3` or `3-of-5`).
-- `propose_admin_action(proposer: Address, operation: AdminOperation, expiry: u64) -> u32`: Creates a new proposal with the proposer's initial approval and emits `AdminProposalCreated`.
-- `approve_admin_action(proposal_id: u32, signer: Address)`: Records an additional admin approval on an active proposal.
-- `execute_admin_action(proposal_id: u32)`: Executes the proposal once `approvals.len() >= threshold`, removes the proposal to prevent replay, and emits `AdminProposalExecuted`.
-
-### Supported Operations
-
-- **Emergency Stop**: `AdminOperation::Pause`, `AdminOperation::Unpause`, `AdminOperation::EmergencyWithdraw(i128)`
-- **Admin Transfer**: `AdminOperation::RotateAdmin(Address)`
-- **Parameter & Fleet Changes**: `AdminOperation::SetGracePeriod(u64)`, `AdminOperation::BulkDeactivate(Vec<String>)`, `AdminOperation::UpgradeContract(BytesN<32>, u32)`
-
-### Events
-
-- `AdminProposalCreated`: Published under topic `("AdminPrpC", proposal_id)` with payload `("AdminProposalCreated", operation, threshold, expiry)`.
-- `AdminProposalExecuted`: Published under topic `("AdminPrpE", proposal_id)` with payload `("AdminProposalExecuted", operation)`.
+Subscription boxes are configured with
+`create_subscription_tier(name, price, included_kwh, rollover_limit)`. Users
+enroll with `subscribe(owner, tier_id)` and can use
+`upgrade_subscription`, `downgrade_subscription`, and `renew_subscription`.
+Renewal deducts the tier price from the owner's first registered meter balance,
+adds the included kWh, and carries unused kWh forward up to the tier's
+`rollover_limit`. `SubscriptionRenewed(owner, tier_id, price)` is emitted for
+enrollment, changes, and monthly renewal. `consume_subscription_kwh` is the
+usage-accounting hook used by the billing integration.
