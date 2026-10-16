@@ -581,8 +581,11 @@ pub enum DataKey {
     PayerPaid(String, Address),
     /// Cumulative amount already refunded to `payer` for `meter_id`.
     PayerRefunded(String, Address),
-    /// List of delegate addresses authorized to make payments for a meter.
+    /// List of delegates authorized to act on a meter, with per-delegate
+    /// permissions and expiry (Issue #981).
     MeterDelegates(String),
+    /// Configured seasonal pricing rates (Issue #992).
+    SeasonalRates,
     /// Storage key for a multisig admin proposal.
     AdminProposal(u32),
     AdminTransferProposal,
@@ -631,6 +634,34 @@ pub struct GroupStats { pub meter_count: u32, pub active_count: u32, pub total_u
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferralStats { pub referred_count: u32, pub total_credits: i128 }
+
+/// Permission bitmask values for a [`Delegate`] (Issue #981).
+/// Combine with bitwise OR: `VIEW | PAY` grants both.
+pub const DELEGATE_PERM_VIEW: u32 = 1;
+pub const DELEGATE_PERM_PAY: u32 = 2;
+pub const DELEGATE_PERM_ADMIN: u32 = 4;
+
+/// A delegated account authorized to act on a meter on the owner's behalf
+/// (Issue #981). `permissions` is a bitmask of the `DELEGATE_PERM_*` bits and
+/// `expiry` is a Unix ledger timestamp (0 = never expires).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Delegate {
+    pub delegated_address: Address,
+    pub permissions: u32,
+    pub expiry: u64,
+}
+
+/// A seasonal pricing band (Issue #992). `multiplier_bps` is in basis points
+/// where 10_000 = 1.0x (no adjustment).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeasonalRate {
+    pub season: Symbol,
+    pub start_date: u64,
+    pub end_date: u64,
+    pub multiplier_bps: u32,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -2162,8 +2193,13 @@ impl SolarGridContract {
 
     // ── Payment Delegation ────────────────────────────────────────────────────
 
-    /// Add a delegate who can make payments on behalf of the meter owner.
-    /// Only the meter owner can add delegates.
+    /// Add (or replace) a delegate who can act on behalf of the meter owner
+    /// (Issue #981). Only the meter owner can add delegates.
+    ///
+    /// `permissions` is a bitmask of `DELEGATE_PERM_VIEW` (1),
+    /// `DELEGATE_PERM_PAY` (2) and `DELEGATE_PERM_ADMIN` (4). `expiry` is a
+    /// Unix ledger timestamp; 0 means the delegation never expires. An expiry
+    /// that is already in the past is rejected.
     ///
     /// # Use cases
     /// - Parents paying for adult children's energy
@@ -2171,11 +2207,13 @@ impl SolarGridContract {
     /// - Property managers paying for rental units
     /// - Energy provider incentive programs
     ///
-    /// Emits: `dlg_add { meter_id, delegate }`
+    /// Emits: `DelegateAdded { delegate, permissions, expiry }`
     pub fn add_delegate(
         env: Env,
         meter_id: String,
         delegate: Address,
+        permissions: u32,
+        expiry: u64,
     ) -> Result<(), ContractError> {
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
@@ -2183,29 +2221,46 @@ impl SolarGridContract {
         // Only meter owner can add delegates
         meter.owner.require_auth();
 
+        if permissions == 0 {
+            return Err(ContractError::InvalidDelegatePermissions);
+        }
+        if expiry != 0 && expiry <= env.ledger().timestamp() {
+            return Err(ContractError::InvalidDelegateExpiry);
+        }
+
         let delegates_key = DataKey::MeterDelegates(meter_id.clone());
-        let mut delegates: Vec<Address> = env
+        let delegates: Vec<Delegate> = env
             .storage()
             .persistent()
             .get(&delegates_key)
             .unwrap_or_else(|| vec![&env]);
 
-        // Check if delegate already exists
-        if !delegates.contains(&delegate) {
-            delegates.push_back(delegate.clone());
-            env.storage().persistent().set(&delegates_key, &delegates);
-
-            env.events()
-                .publish((EVT_NS, symbol_short!("dlg_add"), meter_id), delegate);
+        // Replace any existing entry for the same delegate, otherwise append.
+        let mut new_delegates: Vec<Delegate> = vec![&env];
+        for existing in delegates.iter() {
+            if existing.delegated_address != delegate {
+                new_delegates.push_back(existing);
+            }
         }
+        new_delegates.push_back(Delegate {
+            delegated_address: delegate.clone(),
+            permissions,
+            expiry,
+        });
+        env.storage().persistent().set(&delegates_key, &new_delegates);
+
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "DelegateAdded"), meter_id),
+            (delegate, permissions, expiry),
+        );
 
         Ok(())
     }
 
-    /// Remove a delegate's authorization to make payments.
-    /// Only the meter owner can remove delegates.
+    /// Remove a delegate's authorization. Only the meter owner can remove
+    /// delegates.
     ///
-    /// Emits: `dlg_rem { meter_id, delegate }`
+    /// Emits: `DelegateRemoved { delegate }`
     pub fn remove_delegate(
         env: Env,
         meter_id: String,
@@ -2218,18 +2273,18 @@ impl SolarGridContract {
         meter.owner.require_auth();
 
         let delegates_key = DataKey::MeterDelegates(meter_id.clone());
-        let delegates: Vec<Address> = env
+        let delegates: Vec<Delegate> = env
             .storage()
             .persistent()
             .get(&delegates_key)
             .unwrap_or_else(|| vec![&env]);
 
-        let mut new_delegates: Vec<Address> = vec![&env];
+        let mut new_delegates: Vec<Delegate> = vec![&env];
         let mut found = false;
 
-        for addr in delegates.iter() {
-            if addr != delegate {
-                new_delegates.push_back(addr);
+        for existing in delegates.iter() {
+            if existing.delegated_address != delegate {
+                new_delegates.push_back(existing);
             } else {
                 found = true;
             }
@@ -2240,20 +2295,52 @@ impl SolarGridContract {
                 .persistent()
                 .set(&delegates_key, &new_delegates);
 
-            env.events()
-                .publish((EVT_NS, symbol_short!("dlg_rem"), meter_id), delegate);
+            env.events().publish(
+                (EVT_NS, Symbol::new(&env, "DelegateRemoved"), meter_id),
+                delegate,
+            );
         }
 
         Ok(())
     }
 
-    /// Get all delegates authorized to make payments for a meter.
-    pub fn get_delegates(env: Env, meter_id: String) -> Vec<Address> {
+    /// Get all delegates authorized to act on a meter, with their permissions
+    /// and expiry (Issue #981).
+    pub fn get_delegates(env: Env, meter_id: String) -> Vec<Delegate> {
         let delegates_key = DataKey::MeterDelegates(meter_id);
         env.storage()
             .persistent()
             .get(&delegates_key)
             .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Load the delegate list for `meter_id`, find `caller`, and verify that
+    /// the delegation has not expired and includes `required_bit`. Returns
+    /// [`ContractError::Unauthorized`] otherwise (Issue #981).
+    fn require_delegate_permission(
+        env: &Env,
+        meter_id: &String,
+        caller: &Address,
+        required_bit: u32,
+    ) -> Result<(), ContractError> {
+        let delegates: Vec<Delegate> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MeterDelegates(meter_id.clone()))
+            .unwrap_or_else(|| vec![env]);
+        let now = env.ledger().timestamp();
+        for d in delegates.iter() {
+            if d.delegated_address == *caller {
+                if d.expiry != 0 && now >= d.expiry {
+                    return Err(ContractError::Unauthorized);
+                }
+                if d.permissions & required_bit == 0 {
+                    return Err(ContractError::Unauthorized);
+                }
+                return Ok(());
+            }
+        }
+        Err(ContractError::Unauthorized)
     }
 
     /// Make a payment on behalf of a meter owner as an authorized delegate.
@@ -2274,17 +2361,13 @@ impl SolarGridContract {
             return Err(ContractError::ContractPaused);
         }
 
-        // Verify delegate is authorized
-        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
-        let delegates: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&delegates_key)
-            .unwrap_or_else(|| vec![&env]);
-
-        if !delegates.contains(&delegate) {
-            return Err(ContractError::Unauthorized);
-        }
+        // Verify delegate is authorized with the PAY permission and has not expired.
+        Self::require_delegate_permission(
+            &env,
+            &meter_id,
+            &delegate,
+            DELEGATE_PERM_PAY,
+        )?;
 
         // Delegate must auth the payment
         delegate.require_auth();
@@ -2796,6 +2879,56 @@ impl SolarGridContract {
             .unwrap_or(DEFAULT_UNIT_PRICE)
     }
 
+    /// Configure seasonal pricing bands (Issue #992). Admin-only.
+    ///
+    /// Rates must be non-overlapping, in ascending order, and each
+    /// `multiplier_bps` must be greater than zero.
+    pub fn set_seasonal_rates(
+        env: Env,
+        rates: Vec<SeasonalRate>,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "set_seasonal_rates", "contract")?;
+        let mut previous_end: u64 = 0;
+        for rate in rates.iter() {
+            if rate.multiplier_bps == 0
+                || rate.start_date >= rate.end_date
+                || rate.start_date < previous_end
+            {
+                return Err(ContractError::InvalidSeasonalRate);
+            }
+            previous_end = rate.end_date;
+        }
+        env.storage().instance().set(&DataKey::SeasonalRates, &rates);
+        env.events()
+            .publish((EVT_NS, symbol_short!("season_set")), rates.len());
+        Ok(())
+    }
+
+    /// Return the configured seasonal rates (Issue #992).
+    pub fn get_seasonal_rates(env: Env) -> Vec<SeasonalRate> {
+        env.storage()
+            .instance()
+            .get(&DataKey::SeasonalRates)
+            .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Return the season active at the current ledger timestamp, if any
+    /// (Issue #992).
+    pub fn get_current_season(env: Env) -> Option<SeasonalRate> {
+        let rates: Vec<SeasonalRate> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SeasonalRates)
+            .unwrap_or_else(|| vec![&env]);
+        let now = env.ledger().timestamp();
+        for rate in rates.iter() {
+            if now >= rate.start_date && now < rate.end_date {
+                return Some(rate);
+            }
+        }
+        None
+    }
+
     /// Store validated weekday/weekend windows. All timestamps are interpreted as UTC.
     pub fn set_pricing_schedule(env: Env, schedule: PricingSchedule) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "set_pricing_schedule", "contract")?;
@@ -2827,6 +2960,27 @@ impl SolarGridContract {
         Ok(())
     }
     fn rate_at(env: &Env, timestamp: u64) -> i128 {
+        let base = Self::base_rate_at(env, timestamp);
+        // Apply the active seasonal multiplier, if any (Issue #992).
+        let rates: Vec<SeasonalRate> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SeasonalRates)
+            .unwrap_or_else(|| vec![env]);
+        for rate in rates.iter() {
+            if timestamp >= rate.start_date && timestamp < rate.end_date {
+                env.events().publish(
+                    (EVT_NS, Symbol::new(env, "SeasonalRateApplied"), rate.season.clone()),
+                    (rate.multiplier_bps, timestamp),
+                );
+                return base.saturating_mul(i128::from(rate.multiplier_bps)) / 10_000;
+            }
+        }
+        base
+    }
+
+    /// Resolve the time-of-use / unit price before any seasonal adjustment.
+    fn base_rate_at(env: &Env, timestamp: u64) -> i128 {
         let schedule: Option<PricingSchedule> = env.storage().instance().get(&PRICING_SCHEDULE);
         let Some(schedule) = schedule else {
             return Self::get_unit_price(env.clone());

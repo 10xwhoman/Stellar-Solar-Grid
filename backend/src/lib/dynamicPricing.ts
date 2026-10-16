@@ -7,6 +7,15 @@
 
 export type PriceTier = "off-peak" | "standard" | "peak";
 
+export type Season = "spring" | "summer" | "fall" | "winter";
+
+export type SeasonalRate = {
+  season: Season;
+  startDate: string;
+  endDate: string;
+  multiplier: number;
+};
+
 export type PricePoint = {
   timestamp: string;
   pricePerKwh: number;
@@ -14,6 +23,8 @@ export type PricePoint = {
   supplyKwh: number;
   demandKwh: number;
   supplyDemandRatio: number;
+  season: Season | null;
+  seasonMultiplier: number;
 };
 
 export type PricingConfig = {
@@ -39,6 +50,28 @@ const DEFAULT_CONFIG: PricingConfig = {
 };
 
 let config: PricingConfig = { ...DEFAULT_CONFIG };
+
+let seasonalRates: SeasonalRate[] = [];
+
+export function setSeasonalRates(rates: SeasonalRate[]): SeasonalRate[] {
+  seasonalRates = rates.map((rate) => ({ ...rate }));
+  return getSeasonalRates();
+}
+
+export function getSeasonalRates(): SeasonalRate[] {
+  return seasonalRates.map((rate) => ({ ...rate }));
+}
+
+export function getActiveSeason(now = new Date()): SeasonalRate | null {
+  const time = now.getTime();
+  for (const rate of seasonalRates) {
+    const start = new Date(rate.startDate).getTime();
+    const end = new Date(rate.endDate).getTime();
+    if (Number.isNaN(start) || Number.isNaN(end)) continue;
+    if (time >= start && time <= end) return { ...rate };
+  }
+  return null;
+}
 
 const priceHistory: PricePoint[] = [];
 const MAX_HISTORY = 672; // 7 days × 96 intervals/day
@@ -67,7 +100,10 @@ export function calculatePrice(supplyKwh: number, demandKwh: number, now = new D
   // Demand pressure: price rises when demand > supply, falls when supply > demand
   const demandMultiplier = Math.max(0.5, Math.min(2.0, ratio));
 
-  const rawPrice = config.basePrice * tierMultiplier * demandMultiplier;
+  const activeSeason = getActiveSeason(now);
+  const seasonMultiplier = activeSeason ? activeSeason.multiplier : 1.0;
+
+  const rawPrice = config.basePrice * tierMultiplier * demandMultiplier * seasonMultiplier;
   const pricePerKwh = Math.max(config.minPrice, Math.min(config.maxPrice, rawPrice));
 
   return {
@@ -77,6 +113,8 @@ export function calculatePrice(supplyKwh: number, demandKwh: number, now = new D
     supplyKwh,
     demandKwh,
     supplyDemandRatio: Number(ratio.toFixed(4)),
+    season: activeSeason ? activeSeason.season : null,
+    seasonMultiplier,
   };
 }
 
