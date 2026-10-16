@@ -53,20 +53,13 @@ Endpoints:
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
 
-## Smart Contract Event Replay (#1007)
+## Grid stability and meter geofencing (#1016/#1017)
 
-The backend indexes every Soroban contract event with its ledger (`block`) number in SQLite (`contract_events`) and provides an event-sourcing replay engine (`src/lib/eventReplay.ts`) to reconstruct contract state at any historical block height and compare it against the current state for time-travel debugging and discrepancy analysis.
+Frequency telemetry can be published by meters on `solargrid/meters/{meterId}/frequency` with `{ "frequencyHz": 49.8, "loadKw": 2.4 }`. The bridge applies the 50 Hz threshold response and sends a relay command without routing the message through billing. HTTP equivalents are `POST /api/grid-services/frequency/readings`, `POST /api/grid-services/frequency/contributions`, and `GET /api/grid-services/frequency/:meterId/summary`.
 
-### Endpoints
+GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/meters/{meterId}/location`. The backend compares the report with the registered haversine geofence and records a `LocationVerificationFailed` result when it is outside the permitted radius. Out-of-fence meters are automatically disabled for fraud review.
 
-- `POST /api/events/replay` — Replay indexed contract events across a block range (`fromBlock` to `toBlock`) and return the chronological event stream, reconstructed state, and optional state comparison (`compareWithCurrent: true`).
-  ```json
-  {
-    "fromBlock": 100,
-    "toBlock": 250,
-    "subject": "METER-001",
-    "compareWithCurrent": true
-  }
-  ```
-- `GET /api/events/state/:block` — Reconstruct the full contract state (or a single meter via `?subject=METER-001`) at a specific block height.
-- `GET /api/events/compare?historicalBlock=100&currentBlock=250` — Compare reconstructed state at `historicalBlock` against `currentBlock` (or latest block) and list all field-level discrepancies and deltas.
+- `POST /api/grid-services/geofences` — register the expected location and radius
+- `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
+- `GET /api/grid-services/geofences/:meterId` — status and verification history
+- `GET /api/grid-services/geofences` — data for the frontend map
