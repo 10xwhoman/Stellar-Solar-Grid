@@ -10,6 +10,7 @@
 
 import { handleHeartbeatMessage } from "../lib/meterHealth.js";
 import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
+import { recordDiagnosticResult } from "../lib/diagnosticLogs.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -38,7 +39,13 @@ const TOPIC = "solargrid/meters/+/usage";
 const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
 // Issue #897: registered devices (panels, inverters, meters) publish performance telemetry here.
 const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
+// Issue #993: meters publish the results of remote diagnostic commands here.
+const DIAGNOSTICS_RESULT_TOPIC = "solargrid/meters/+/diagnostics-result";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
+
+/** Issue #993: remote diagnostic commands a technician can trigger. */
+export const DIAGNOSTIC_COMMANDS = ["reboot", "self_test", "check_connectivity"] as const;
+export type DiagnosticCommand = (typeof DIAGNOSTIC_COMMANDS)[number];
 
 let mqttClient: mqtt.MqttClient | null = null;
 export function getMqttClient() { return mqttClient; }
@@ -59,6 +66,50 @@ export function sendRelayCommand(meterId: string, command: "ON" | "OFF", source:
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, `Failed to publish ${command} command`); },
   );
+  return true;
+}
+
+/**
+ * Issue #993: publish a remote diagnostic command to a meter. Returns false
+ * when the MQTT bridge is not connected so callers can surface a clear error
+ * instead of silently dropping the request.
+ */
+export function sendDiagnosticCommand(meterId: string, command: DiagnosticCommand): boolean {
+  if (!mqttClient?.connected) return false;
+  const topic = `solargrid/meters/${meterId}/diagnostics`;
+  const requestId = crypto.randomUUID();
+  logger.info(
+    { event: "diagnostic_command", meterId, command, topic, requestId },
+    "Sending remote diagnostic command",
+  );
+  mqttClient.publish(
+    topic,
+    JSON.stringify({ cmd: command, requestId, timestamp: new Date().toISOString() }),
+    { qos: 1 },
+    (err) => { if (err) logger.error({ meterId, command, err }, "Failed to publish diagnostic command"); },
+  );
+  return true;
+}
+
+/**
+ * Issue #993: route inbound diagnostic results to the diagnostic log store.
+ * Returns true when the topic matched the diagnostics-result pattern.
+ */
+export function handleDiagnosticResultTopic(topic: string, payload: Buffer): boolean {
+  const segments = topic.split("/");
+  if (
+    segments.length !== 4 ||
+    segments[0] !== "solargrid" ||
+    segments[1] !== "meters" ||
+    segments[3] !== "diagnostics-result"
+  ) {
+    return false;
+  }
+  try {
+    recordDiagnosticResult(segments[2], payload);
+  } catch (err) {
+    logger.error("Diagnostic result handling failed", { topic, err });
+  }
   return true;
 }
 
@@ -364,6 +415,8 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     return;
   }
 
+  if (handleDiagnosticResultTopic(topic, payload)) return;
+
   const meterId = topic.split("/")[2];
   const rawStr = payload.toString();
 
@@ -517,6 +570,9 @@ function startMqttBridge() {
     client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
       if (err) logger.error("MQTT device telemetry subscribe error", { err });
     });
+    client.subscribe(DIAGNOSTICS_RESULT_TOPIC, { qos: 1 }, (err) => {
+      if (err) logger.error("MQTT diagnostics result subscribe error", { err });
+    });
   });
 
   client.on("message", async (topic, payload) => {
@@ -528,6 +584,7 @@ function startMqttBridge() {
       return;
     }
     if (handleDeviceTelemetryTopic(topic, payload)) return;
+    if (handleDiagnosticResultTopic(topic, payload)) return;
     try {
       // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
       // missed ack) before they're persisted/submitted a second time.

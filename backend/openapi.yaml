@@ -103,6 +103,108 @@ components:
 
     # ── Meter ─────────────────────────────────────────────────────────────────
 
+    ForecastConfidenceBand:
+      type: object
+      description: Confidence interval for a forecasted value (#982)
+      required: [low, high]
+      properties:
+        low: { type: number, description: Lower bound of the prediction interval }
+        high: { type: number, description: Upper bound of the prediction interval }
+
+    ForecastDay:
+      type: object
+      description: A single day of the 7-day usage and solar generation forecast (#982)
+      required: [date, predictedUsageKwh, predictedSolarKwh, usageConfidence, solarConfidence]
+      properties:
+        date: { type: string, format: date }
+        predictedUsageKwh: { type: number, description: Predicted energy consumption in kWh }
+        predictedSolarKwh: { type: number, description: Predicted solar generation in kWh }
+        usageConfidence:
+          $ref: "#/components/schemas/ForecastConfidenceBand"
+        solarConfidence:
+          $ref: "#/components/schemas/ForecastConfidenceBand"
+        temperatureC: { type: number, description: Forecast mean temperature in Celsius }
+        sunlightHours: { type: number, description: Forecast sunlight hours }
+        cloudCoverPct: { type: number, description: Forecast cloud cover percentage }
+        condition: { type: string, description: Weather condition summary }
+
+    CreditAlert:
+      type: object
+      description: Alert raised when the meter is predicted to run out of credit (#982)
+      required: [willRunOut, daysUntilEmpty]
+      properties:
+        willRunOut: { type: boolean }
+        daysUntilEmpty: { type: [integer, "null"], description: Days until predicted credit exhaustion }
+        predictedEmptyDate: { type: [string, "null"], format: date }
+        message: { type: string }
+
+    MeterForecast:
+      type: object
+      description: 7-day weather-based usage and solar generation forecast (#982)
+      required: [meterId, generatedAt, horizonDays, days, creditAlert]
+      properties:
+        meterId: { type: string }
+        generatedAt: { type: string, format: date-time }
+        horizonDays: { type: integer, default: 7 }
+        location:
+          type: object
+          properties:
+            lat: { type: number }
+            lon: { type: number }
+        days:
+          type: array
+          items:
+            $ref: "#/components/schemas/ForecastDay"
+        creditAlert:
+          $ref: "#/components/schemas/CreditAlert"
+        model:
+          $ref: "#/components/schemas/EnergyForecastModel"
+
+    ApplianceUsage:
+      type: object
+      description: Per-appliance energy usage breakdown entry (#983)
+      required: [appliance, usageKwh, sharePct]
+      properties:
+        appliance: { type: string, description: Identified appliance name }
+        usageKwh: { type: number, description: Energy consumed in kWh }
+        sharePct: { type: number, description: Percentage of total consumption }
+        trend:
+          type: string
+          enum: [increasing, decreasing, stable]
+          description: Usage trend relative to the previous period
+        recommendation: { type: string, description: Energy-saving recommendation }
+
+    ApplianceBreakdown:
+      type: object
+      description: Appliance-level energy monitoring breakdown (#983)
+      required: [meterId, generatedAt, totalUsageKwh, appliances]
+      properties:
+        meterId: { type: string }
+        generatedAt: { type: string, format: date-time }
+        totalUsageKwh: { type: number }
+        appliances:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApplianceUsage"
+
+    DiagnosticLog:
+      type: object
+      description: Result of a remote meter diagnostic command (#993)
+      required: [id, meterId, command, status, startedAt]
+      properties:
+        id: { type: integer }
+        meterId: { type: string }
+        command:
+          type: string
+          enum: [reboot, self_test, check_connectivity]
+        status:
+          type: string
+          enum: [pending, running, success, failed]
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: [string, "null"], format: date-time }
+        result: { type: [object, "null"], description: Raw diagnostic result payload }
+        suggestedFix: { type: [string, "null"], description: Suggested remediation for common issue patterns }
+
     MeterBalance:
       type: object
       required: [meter_id, balance, units_used, active]
@@ -619,6 +721,159 @@ paths:
                   requested: { type: integer }
         "400":
           $ref: "#/components/responses/ValidationError"
+
+  /api/meters/{meterId}/forecast:
+    get:
+      summary: 7-day weather-based usage and solar generation forecast
+      description: |
+        Returns a 7-day forecast of energy consumption and solar generation
+        based on upcoming weather conditions (temperature and sunlight).
+        Includes confidence bands and an alert if the meter is predicted to
+        run out of credit. (#982)
+      operationId: getMeterForecast
+      tags: [meters]
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: days
+          in: query
+          description: Forecast horizon in days (default 7).
+          schema: { type: integer, minimum: 1, maximum: 7, default: 7 }
+      responses:
+        "200":
+          description: 7-day forecast with confidence bands and credit alert
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterForecast"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          description: Weather provider did not return a usable forecast.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/meters/{meterId}/appliances:
+    get:
+      summary: Appliance-level energy usage breakdown
+      description: |
+        Returns per-appliance energy consumption identified via ML
+        disaggregation or sub-metering, including usage trends and
+        energy-saving recommendations. (#983)
+      operationId: getMeterAppliances
+      tags: [meters]
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: period
+          in: query
+          description: Aggregation period for the breakdown.
+          schema: { type: string, enum: [day, week, month], default: week }
+      responses:
+        "200":
+          description: Appliance usage breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplianceBreakdown"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/meters/{meterId}/diagnostics:
+    post:
+      summary: Trigger a remote meter diagnostic command
+      description: |
+        Sends a diagnostic command to the meter over the network. The meter
+        reports results via MQTT, which are retrievable from the diagnostic
+        logs endpoint. (#993)
+      operationId: runMeterDiagnostics
+      tags: [meters]
+      security:
+        - AdminKey: []
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command:
+                  type: string
+                  enum: [reboot, self_test, check_connectivity]
+      responses:
+        "202":
+          description: Diagnostic command accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosticLog"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/meters/{meterId}/diagnostic-logs:
+    get:
+      summary: Retrieve diagnostic logs for a meter
+      description: |
+        Returns the history of remote diagnostic commands and their results,
+        including suggested fixes for common issue patterns. (#993)
+      operationId: getMeterDiagnosticLogs
+      tags: [meters]
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated diagnostic logs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [logs, page, pageSize, total, hasMore]
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DiagnosticLog"
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  hasMore: { type: boolean }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/meters/{id}/balance:
     get:

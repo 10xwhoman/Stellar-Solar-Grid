@@ -32,6 +32,10 @@ import {
   searchMetersByLocationIndex,
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
+import {
+  forecastUsage,
+  WeatherUnavailableError,
+} from "../lib/usageForecast.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -504,6 +508,77 @@ export function createMeterRouter(stellar: StellarService) {
         indexMeterLocation(meterId, loc, metadata);
       }
       res.json({ success: true, meter_id: meterId, location: loc, metadata });
+    }),
+  );
+
+  /**
+   * GET /api/meters/:meterId/forecast — 7-day weather-aware usage forecast.
+   *
+   * Accepts optional lat/lon query params; otherwise falls back to the
+   * coordinates registered on the meter's linked solar device. Returns a
+   * per-day predictedKwh with confidence bands, the weather inputs used,
+   * a solarGeneration array when a solar device is linked, and a
+   * creditAlert computed from the meter's current balance.
+   *
+   * Closes #982.
+   */
+  meterRouter.get(
+    "/:meterId/forecast",
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.meterId;
+
+      let meter: any;
+      try {
+        const result = await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+        meter = StellarSdk.scValToNative(result);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
+      }
+      if (!meter) {
+        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
+      }
+
+      // Resolve coordinates: explicit query params win, otherwise fall back
+      // to the meter's registered solar device location.
+      let lat = Number(req.query.lat);
+      let lon = Number(req.query.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        const solar = meter.solar_device ?? meter.solarDevice ?? null;
+        if (solar && Number.isFinite(Number(solar.lat)) && Number.isFinite(Number(solar.lon))) {
+          lat = Number(solar.lat);
+          lon = Number(solar.lon);
+        }
+      }
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        return res.status(400).json({
+          error: "lat and lon query parameters are required (or register a solar device with coordinates)",
+          code: "VALIDATION_ERROR",
+        });
+      }
+
+      try {
+        const forecast = await forecastUsage({
+          meterId,
+          lat,
+          lon,
+          balance: Number(meter.balance ?? 0),
+          solarDevice: meter.solar_device ?? meter.solarDevice ?? null,
+        });
+
+        return res.json(forecast);
+      } catch (err: any) {
+        if (err instanceof WeatherUnavailableError || err?.code === "WEATHER_UNAVAILABLE") {
+          return res.status(503).json({
+            error: "Weather data is currently unavailable",
+            code: "WEATHER_UNAVAILABLE",
+          });
+        }
+        logger.error("Forecast failed", { meterId, err });
+        return res.status(500).json({ error: "Forecast failed", code: "INTERNAL_ERROR" });
+      }
     }),
   );
 

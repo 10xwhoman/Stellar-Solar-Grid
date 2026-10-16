@@ -134,4 +134,203 @@ mod additional_tests {
         let meter = client.get_meter(&meter_id).unwrap();
         assert!(meter.balance < 10_i128);
     }
+
+    // ------------------------------------------------------------------
+    // Community solar farm tests
+    // ------------------------------------------------------------------
+
+    fn setup_solar_farm(
+        env: &Env,
+        client: &SolarGridContractClient<'static>,
+        farm_id: &str,
+        capacity: i128,
+    ) {
+        let id = String::from_str(env, farm_id);
+        client.create_solar_farm(&id, &capacity);
+    }
+
+    #[test]
+    fn test_create_solar_farm() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+
+        let farm = client.get_solar_farm(&farm_id).unwrap();
+        assert_eq!(farm.capacity, 10_000_i128);
+        assert_eq!(farm.total_generation, 0_i128);
+        assert_eq!(farm.shareholders.len(), 0);
+    }
+
+    #[test]
+    fn test_buy_solar_share() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let investor = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+        client.buy_solar_share(&farm_id, &investor, &2_500_i128);
+
+        let farm = client.get_solar_farm(&farm_id).unwrap();
+        assert_eq!(farm.shareholders.len(), 1);
+        assert_eq!(client.get_solar_share(&farm_id, &investor), 2_500_i128);
+    }
+
+    #[test]
+    fn test_buy_solar_share_zero_amount_fails() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let investor = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+
+        let result = std::panic::catch_unwind(|| {
+            client.buy_solar_share(&farm_id, &investor, &0_i128);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_buy_solar_share_negative_amount_fails() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let investor = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+
+        let result = std::panic::catch_unwind(|| {
+            client.buy_solar_share(&farm_id, &investor, &-100_i128);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_buy_solar_share_unknown_farm_fails() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-UNKNOWN");
+        let investor = Address::generate(&env);
+
+        let result = std::panic::catch_unwind(|| {
+            client.buy_solar_share(&farm_id, &investor, &1_000_i128);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multiple_shareholders_balances() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+        client.buy_solar_share(&farm_id, &alice, &3_000_i128);
+        client.buy_solar_share(&farm_id, &bob, &1_000_i128);
+        // Alice tops up her position
+        client.buy_solar_share(&farm_id, &alice, &1_000_i128);
+
+        assert_eq!(client.get_solar_share(&farm_id, &alice), 4_000_i128);
+        assert_eq!(client.get_solar_share(&farm_id, &bob), 1_000_i128);
+
+        let farm = client.get_solar_farm(&farm_id).unwrap();
+        assert_eq!(farm.shareholders.len(), 2);
+    }
+
+    #[test]
+    fn test_distribute_generation_credits_proportionally() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+        client.buy_solar_share(&farm_id, &alice, &3_000_i128);
+        client.buy_solar_share(&farm_id, &bob, &1_000_i128);
+
+        // 4_000 total shares; 8_000 generation units.
+        // Alice (75%) -> 6_000, Bob (25%) -> 2_000.
+        client.distribute_generation_credits(&farm_id, &8_000_i128);
+
+        assert_eq!(client.get_solar_credits(&farm_id, &alice), 6_000_i128);
+        assert_eq!(client.get_solar_credits(&farm_id, &bob), 2_000_i128);
+    }
+
+    #[test]
+    fn test_total_generation_tracked_across_distributions() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let alice = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+        client.buy_solar_share(&farm_id, &alice, &1_000_i128);
+
+        client.distribute_generation_credits(&farm_id, &5_000_i128);
+        client.distribute_generation_credits(&farm_id, &2_500_i128);
+
+        let farm = client.get_solar_farm(&farm_id).unwrap();
+        assert_eq!(farm.total_generation, 7_500_i128);
+        assert_eq!(client.get_solar_credits(&farm_id, &alice), 7_500_i128);
+    }
+
+    #[test]
+    fn test_share_purchased_event_emitted() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let investor = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+        client.buy_solar_share(&farm_id, &investor, &2_500_i128);
+
+        let events = env.events().all();
+        let expected_topic = symbol_short!("SharePur");
+        let mut found = false;
+        for (contract, topics, data) in events.iter() {
+            if contract != client.address {
+                continue;
+            }
+            if topics.len() == 1 {
+                let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+                if topic == expected_topic {
+                    let (emitted_farm, emitted_investor, emitted_amount): (String, Address, i128) =
+                        <(String, Address, i128)>::try_from_val(&env, &data).unwrap();
+                    assert_eq!(emitted_farm, farm_id);
+                    assert_eq!(emitted_investor, investor);
+                    assert_eq!(emitted_amount, 2_500_i128);
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "SharePurchased event not emitted");
+    }
+
+    #[test]
+    fn test_credits_distributed_event_emitted() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let farm_id = String::from_str(&env, "FARM-001");
+        let alice = Address::generate(&env);
+
+        client.create_solar_farm(&farm_id, &10_000_i128);
+        client.buy_solar_share(&farm_id, &alice, &1_000_i128);
+        client.distribute_generation_credits(&farm_id, &4_000_i128);
+
+        let events = env.events().all();
+        let expected_topic = symbol_short!("CredDist");
+        let mut found = false;
+        for (contract, topics, data) in events.iter() {
+            if contract != client.address {
+                continue;
+            }
+            if topics.len() == 1 {
+                let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+                if topic == expected_topic {
+                    let (emitted_farm, emitted_amount): (String, i128) =
+                        <(String, i128)>::try_from_val(&env, &data).unwrap();
+                    assert_eq!(emitted_farm, farm_id);
+                    assert_eq!(emitted_amount, 4_000_i128);
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "CreditsDistributed event not emitted");
+    }
 }
