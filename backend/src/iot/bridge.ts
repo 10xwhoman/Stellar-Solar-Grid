@@ -10,6 +10,7 @@
 
 import { handleHeartbeatMessage } from "../lib/meterHealth.js";
 import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
+import { recordPowerQualitySample, analyzePowerQuality } from "../lib/powerQuality.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -38,6 +39,8 @@ const TOPIC = "solargrid/meters/+/usage";
 const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
 // Issue #897: registered devices (panels, inverters, meters) publish performance telemetry here.
 const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
+// Issue #988: meters publish power quality metrics (voltage, frequency, THD) here.
+const POWER_QUALITY_TOPIC = "solargrid/meters/+/power-quality";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
@@ -60,6 +63,51 @@ export function sendRelayCommand(meterId: string, command: "ON" | "OFF", source:
     (err) => { if (err) logger.error({ meterId, err }, `Failed to publish ${command} command`); },
   );
   return true;
+}
+
+/**
+ * Issue #988: handle a power-quality reading published by a meter.
+ * Payload: { voltage, frequency, thd }. Malformed payloads are logged and
+ * ignored so the bridge keeps running.
+ */
+export function handlePowerQualityMessage(meterId: string, payload: Buffer): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(payload.toString());
+  } catch (err) {
+    logger.error("Malformed power-quality MQTT payload (not JSON), skipping", {
+      meterId,
+      raw: payload.toString(),
+      err,
+    });
+    return;
+  }
+
+  const { voltage, frequency, thd } = (raw ?? {}) as {
+    voltage?: unknown;
+    frequency?: unknown;
+    thd?: unknown;
+  };
+
+  if (
+    typeof voltage !== "number" || !Number.isFinite(voltage) ||
+    typeof frequency !== "number" || !Number.isFinite(frequency) ||
+    typeof thd !== "number" || !Number.isFinite(thd)
+  ) {
+    logger.error("Invalid power-quality MQTT payload (non-finite values), skipping", {
+      meterId,
+      raw: payload.toString(),
+    });
+    return;
+  }
+
+  try {
+    recordPowerQualitySample(meterId, { voltage, frequency, thd });
+    analyzePowerQuality(meterId);
+    logger.info("Power quality sample recorded", { meterId, voltage, frequency, thd });
+  } catch (err) {
+    logger.error("Power quality handling failed", { meterId, err });
+  }
 }
 
 export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): boolean {
@@ -517,6 +565,9 @@ function startMqttBridge() {
     client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
       if (err) logger.error("MQTT device telemetry subscribe error", { err });
     });
+    client.subscribe(POWER_QUALITY_TOPIC, { qos: 1 }, (err) => {
+      if (err) logger.error("MQTT power quality subscribe error", { err });
+    });
   });
 
   client.on("message", async (topic, payload) => {
@@ -525,6 +576,10 @@ function startMqttBridge() {
     mqttMessages.inc({ topic: labelTopic });
     if (segments[3] === "heartbeat") {
       handleHeartbeatMessage(segments[2], payload);
+      return;
+    }
+    if (segments[3] === "power-quality") {
+      handlePowerQualityMessage(segments[2], payload);
       return;
     }
     if (handleDeviceTelemetryTopic(topic, payload)) return;

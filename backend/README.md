@@ -52,3 +52,51 @@ Endpoints:
 - `POST /api/meters/:meterId/heartbeat` — record a heartbeat over HTTP
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
+
+## Power Quality Monitoring (#988)
+
+Meters report real-time power quality metrics so the backend can detect grid
+issues (voltage sags, swells and harmonic distortion) and protect appliances.
+
+### Ingestion
+
+Meters publish samples to `solargrid/meters/{meterId}/power-quality` with a JSON
+payload:
+
+```json
+{ "voltage": 230, "frequency": 50, "thd": 3.2 }
+```
+
+Samples can also be ingested over HTTP:
+
+- `POST /api/meters/:meterId/power-quality` — record a power quality sample
+
+### Reading
+
+- `GET /api/meters/:meterId/power-quality?days=7` — recent samples plus quality
+  summary and historical trending for the requested window (default `7` days).
+
+### Detection Rules
+
+| Issue               | Condition                                             |
+|---------------------|-------------------------------------------------------|
+| Voltage sag         | `voltage` < `POWER_QUALITY_VOLTAGE_MIN`               |
+| Voltage swell       | `voltage` > `POWER_QUALITY_VOLTAGE_MAX`               |
+| Harmonic distortion | `thd` > `POWER_QUALITY_THD_MAX`                       |
+| Frequency deviation | `frequency` outside `POWER_QUALITY_FREQUENCY_MIN`–`POWER_QUALITY_FREQUENCY_MAX` |
+
+### Alerting
+
+When a sample breaches a threshold the backend records a quality issue and
+notifies the meter owner via push and email notifications. Alerts are throttled
+per meter and issue type to avoid notification storms.
+
+### Tunables
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `POWER_QUALITY_VOLTAGE_MIN` | Minimum acceptable voltage (V) | `207` |
+| `POWER_QUALITY_VOLTAGE_MAX` | Maximum acceptable voltage (V) | `253` |
+| `POWER_QUALITY_THD_MAX` | Maximum acceptable THD (%) | `8` |
+| `POWER_QUALITY_FREQUENCY_MIN` | Minimum acceptable frequency (Hz) | `49.5` |
+| `POWER_QUALITY_FREQUENCY_MAX` | Maximum acceptable frequency (Hz) | `50.5` |

@@ -74,3 +74,38 @@ export async function getPaymentHistory(filters: PaymentHistoryFilters = {}): Pr
   const { payments } = (await res.json()) as { payments: PaymentRecord[] };
   return payments;
 }
+
+export interface PowerQualitySample {
+  voltage: number;
+  frequency: number;
+  thd: number;
+  timestamp: string;
+}
+
+export interface PowerQualityIssue {
+  type: string;
+  severity: string;
+  value: number;
+  threshold: number;
+  detectedAt: string;
+}
+
+export interface PowerQualityResponse {
+  meterId: string;
+  current: PowerQualitySample;
+  issues: PowerQualityIssue[];
+  history: PowerQualitySample[];
+  thresholds: Record<string, number>;
+}
+
+export async function getMeterPowerQuality(
+  meterId: string,
+  days = 7,
+): Promise<PowerQualityResponse> {
+  const res = await fetch(`${API_BASE}/meters/${meterId}/power-quality?days=${days}`);
+  if (!res.ok) {
+    const { error } = (await res.json()) as { error: string };
+    throw new Error(error ?? "Failed to fetch power quality");
+  }
+  return (await res.json()) as PowerQualityResponse;
+}

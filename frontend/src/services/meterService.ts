@@ -1,4 +1,5 @@
 import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, contractInvoke, type MeterData } from "@/lib/contract";
+import { getMeterPowerQuality, type PowerQualityResponse } from "@/lib/api";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export type { MeterData };
@@ -21,6 +22,13 @@ export async function getAllMeters(): Promise<MeterData[]> {
 
 export async function getMetersPaginated(offset: number, limit: number): Promise<string[]> {
   return fetchMetersPaginated(offset, limit);
+}
+
+export async function getPowerQuality(
+  meterId: string,
+  days?: number,
+): Promise<PowerQualityResponse> {
+  return getMeterPowerQuality(meterId, days);
 }
 
 export async function transferOwnership(
