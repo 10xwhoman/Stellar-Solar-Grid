@@ -32,12 +32,7 @@ import {
   searchMetersByLocationIndex,
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
-import {
-  getPowerQualitySummary,
-  getPowerQualityHistory,
-  recordPowerQualityReading,
-  POWER_QUALITY_THRESHOLDS,
-} from "../lib/powerQuality.js";
+import { getBatteryStats } from "../lib/batteryStats.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -625,6 +620,29 @@ export function createMeterRouter(stellar: StellarService) {
         indexMeterLocation(meterId, loc, metadata);
       }
       res.json({ success: true, meter_id: meterId, location: loc, metadata });
+    }),
+  );
+
+  /**
+   * GET /api/meters/:meterId/battery — battery telemetry stats for a meter.
+   *
+   * Returns voltage, current, state of charge, health percentage, cycle
+   * count and the predicted replacement date derived from the recorded
+   * battery telemetry. Responds 404 when no battery telemetry has been
+   * recorded for the meter.
+   */
+  meterRouter.get(
+    "/:meterId/battery",
+    asyncHandler(async (req, res) => {
+      const { meterId } = req.params;
+      const stats = getBatteryStats(meterId);
+      if (!stats) {
+        return res.status(404).json({
+          error: "No battery telemetry recorded for this meter",
+          code: "BATTERY_NOT_FOUND",
+        });
+      }
+      return res.json(stats);
     }),
   );
 

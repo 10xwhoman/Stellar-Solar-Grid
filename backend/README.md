@@ -53,50 +53,13 @@ Endpoints:
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
 
-## Power Quality Monitoring (#988)
+## Grid stability and meter geofencing (#1016/#1017)
 
-Meters report real-time power quality metrics so the backend can detect grid
-issues (voltage sags, swells and harmonic distortion) and protect appliances.
+Frequency telemetry can be published by meters on `solargrid/meters/{meterId}/frequency` with `{ "frequencyHz": 49.8, "loadKw": 2.4 }`. The bridge applies the 50 Hz threshold response and sends a relay command without routing the message through billing. HTTP equivalents are `POST /api/grid-services/frequency/readings`, `POST /api/grid-services/frequency/contributions`, and `GET /api/grid-services/frequency/:meterId/summary`.
 
-### Ingestion
+GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/meters/{meterId}/location`. The backend compares the report with the registered haversine geofence and records a `LocationVerificationFailed` result when it is outside the permitted radius. Out-of-fence meters are automatically disabled for fraud review.
 
-Meters publish samples to `solargrid/meters/{meterId}/power-quality` with a JSON
-payload:
-
-```json
-{ "voltage": 230, "frequency": 50, "thd": 3.2 }
-```
-
-Samples can also be ingested over HTTP:
-
-- `POST /api/meters/:meterId/power-quality` — record a power quality sample
-
-### Reading
-
-- `GET /api/meters/:meterId/power-quality?days=7` — recent samples plus quality
-  summary and historical trending for the requested window (default `7` days).
-
-### Detection Rules
-
-| Issue               | Condition                                             |
-|---------------------|-------------------------------------------------------|
-| Voltage sag         | `voltage` < `POWER_QUALITY_VOLTAGE_MIN`               |
-| Voltage swell       | `voltage` > `POWER_QUALITY_VOLTAGE_MAX`               |
-| Harmonic distortion | `thd` > `POWER_QUALITY_THD_MAX`                       |
-| Frequency deviation | `frequency` outside `POWER_QUALITY_FREQUENCY_MIN`–`POWER_QUALITY_FREQUENCY_MAX` |
-
-### Alerting
-
-When a sample breaches a threshold the backend records a quality issue and
-notifies the meter owner via push and email notifications. Alerts are throttled
-per meter and issue type to avoid notification storms.
-
-### Tunables
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `POWER_QUALITY_VOLTAGE_MIN` | Minimum acceptable voltage (V) | `207` |
-| `POWER_QUALITY_VOLTAGE_MAX` | Maximum acceptable voltage (V) | `253` |
-| `POWER_QUALITY_THD_MAX` | Maximum acceptable THD (%) | `8` |
-| `POWER_QUALITY_FREQUENCY_MIN` | Minimum acceptable frequency (Hz) | `49.5` |
-| `POWER_QUALITY_FREQUENCY_MAX` | Maximum acceptable frequency (Hz) | `50.5` |
+- `POST /api/grid-services/geofences` — register the expected location and radius
+- `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
+- `GET /api/grid-services/geofences/:meterId` — status and verification history
+- `GET /api/grid-services/geofences` — data for the frontend map
