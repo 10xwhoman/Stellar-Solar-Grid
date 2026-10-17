@@ -32,10 +32,7 @@ import {
   searchMetersByLocationIndex,
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
-import {
-  forecastUsage,
-  WeatherUnavailableError,
-} from "../lib/usageForecast.js";
+import { getBatteryStats } from "../lib/batteryStats.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -512,73 +509,25 @@ export function createMeterRouter(stellar: StellarService) {
   );
 
   /**
-   * GET /api/meters/:meterId/forecast — 7-day weather-aware usage forecast.
+   * GET /api/meters/:meterId/battery — battery telemetry stats for a meter.
    *
-   * Accepts optional lat/lon query params; otherwise falls back to the
-   * coordinates registered on the meter's linked solar device. Returns a
-   * per-day predictedKwh with confidence bands, the weather inputs used,
-   * a solarGeneration array when a solar device is linked, and a
-   * creditAlert computed from the meter's current balance.
-   *
-   * Closes #982.
+   * Returns voltage, current, state of charge, health percentage, cycle
+   * count and the predicted replacement date derived from the recorded
+   * battery telemetry. Responds 404 when no battery telemetry has been
+   * recorded for the meter.
    */
   meterRouter.get(
-    "/:meterId/forecast",
+    "/:meterId/battery",
     asyncHandler(async (req, res) => {
-      const meterId = req.params.meterId;
-
-      let meter: any;
-      try {
-        const result = await stellar.query("get_meter", [
-          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-        ]);
-        meter = StellarSdk.scValToNative(result);
-      } catch {
-        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
-      }
-      if (!meter) {
-        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
-      }
-
-      // Resolve coordinates: explicit query params win, otherwise fall back
-      // to the meter's registered solar device location.
-      let lat = Number(req.query.lat);
-      let lon = Number(req.query.lon);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-        const solar = meter.solar_device ?? meter.solarDevice ?? null;
-        if (solar && Number.isFinite(Number(solar.lat)) && Number.isFinite(Number(solar.lon))) {
-          lat = Number(solar.lat);
-          lon = Number(solar.lon);
-        }
-      }
-
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-        return res.status(400).json({
-          error: "lat and lon query parameters are required (or register a solar device with coordinates)",
-          code: "VALIDATION_ERROR",
+      const { meterId } = req.params;
+      const stats = getBatteryStats(meterId);
+      if (!stats) {
+        return res.status(404).json({
+          error: "No battery telemetry recorded for this meter",
+          code: "BATTERY_NOT_FOUND",
         });
       }
-
-      try {
-        const forecast = await forecastUsage({
-          meterId,
-          lat,
-          lon,
-          balance: Number(meter.balance ?? 0),
-          solarDevice: meter.solar_device ?? meter.solarDevice ?? null,
-        });
-
-        return res.json(forecast);
-      } catch (err: any) {
-        if (err instanceof WeatherUnavailableError || err?.code === "WEATHER_UNAVAILABLE") {
-          return res.status(503).json({
-            error: "Weather data is currently unavailable",
-            code: "WEATHER_UNAVAILABLE",
-          });
-        }
-        logger.error("Forecast failed", { meterId, err });
-        return res.status(500).json({ error: "Forecast failed", code: "INTERNAL_ERROR" });
-      }
+      return res.json(stats);
     }),
   );
 

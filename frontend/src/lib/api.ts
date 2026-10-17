@@ -75,159 +75,192 @@ export async function getPaymentHistory(filters: PaymentHistoryFilters = {}): Pr
   return payments;
 }
 
-export interface ForecastDay {
-  date: string;
-  predictedUsageKwh: number;
-  predictedSolarKwh: number;
-  confidenceLowKwh: number;
-  confidenceHighKwh: number;
-  temperatureC: number;
-  sunlightHours: number;
+async function parseError(res: Response, fallback: string): Promise<never> {
+  let message = fallback;
+  try {
+    const { error } = (await res.json()) as { error?: string };
+    if (error) message = error;
+  } catch {
+    // response body was not JSON; keep the fallback message
+  }
+  throw new Error(message);
 }
 
-export interface MeterForecast {
+// ---------------------------------------------------------------------------
+// Technician portal (work orders)
+// ---------------------------------------------------------------------------
+
+export interface WorkOrder {
+  id: string;
+  techId: string;
   meterId: string;
-  generatedAt: string;
-  days: ForecastDay[];
-  creditRunoutDate: string | null;
-  creditRunoutAlert: boolean;
+  type: string;
+  status: string;
+  notes?: string;
+  photoUrl?: string;
+  createdAt: string;
+  completedAt?: string;
 }
 
-export interface ForecastOptions {
-  days?: number;
-  includeSolar?: boolean;
+export interface CreateWorkOrderPayload {
+  techId: string;
+  meterId: string;
+  type: string;
+  notes?: string;
 }
 
-export async function fetchMeterForecast(
-  meterId: string,
-  options: ForecastOptions = {},
-): Promise<MeterForecast> {
+export async function getWorkOrders(techId: string): Promise<WorkOrder[]> {
+  const res = await fetch(`${API_BASE}/work-orders/assigned/${encodeURIComponent(techId)}`);
+  if (!res.ok) await parseError(res, "Failed to fetch work orders");
+  const { workOrders } = (await res.json()) as { workOrders: WorkOrder[] };
+  return workOrders;
+}
+
+export async function createWorkOrder(payload: CreateWorkOrderPayload): Promise<WorkOrder> {
+  const res = await fetch(`${API_BASE}/work-orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to create work order");
+  const { workOrder } = (await res.json()) as { workOrder: WorkOrder };
+  return workOrder;
+}
+
+export async function completeWorkOrder(id: string, notes?: string): Promise<WorkOrder> {
+  const res = await fetch(`${API_BASE}/work-orders/${encodeURIComponent(id)}/complete`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes }),
+  });
+  if (!res.ok) await parseError(res, "Failed to complete work order");
+  const { workOrder } = (await res.json()) as { workOrder: WorkOrder };
+  return workOrder;
+}
+
+export async function uploadWorkOrderPhoto(id: string, file: File): Promise<WorkOrder> {
+  const formData = new FormData();
+  formData.append("photo", file);
+  const res = await fetch(`${API_BASE}/work-orders/${encodeURIComponent(id)}/photo`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) await parseError(res, "Failed to upload work order photo");
+  const { workOrder } = (await res.json()) as { workOrder: WorkOrder };
+  return workOrder;
+}
+
+// ---------------------------------------------------------------------------
+// Customer satisfaction surveys
+// ---------------------------------------------------------------------------
+
+export interface Survey {
+  id: string;
+  title: string;
+  question: string;
+  createdAt: string;
+}
+
+export interface CreateSurveyPayload {
+  title: string;
+  question: string;
+  audience?: string;
+}
+
+export interface SurveyAnalytics {
+  nps: number;
+  averageScore: number;
+  responseCount: number;
+  promoters: number;
+  passives: number;
+  detractors: number;
+}
+
+export async function getSurveys(): Promise<Survey[]> {
+  const res = await fetch(`${API_BASE}/surveys`);
+  if (!res.ok) await parseError(res, "Failed to fetch surveys");
+  const { surveys } = (await res.json()) as { surveys: Survey[] };
+  return surveys;
+}
+
+export async function createSurvey(payload: CreateSurveyPayload): Promise<Survey> {
+  const res = await fetch(`${API_BASE}/surveys`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to create survey");
+  const { survey } = (await res.json()) as { survey: Survey };
+  return survey;
+}
+
+export async function submitSurveyResponse(
+  id: string,
+  score: number,
+  comment?: string,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/surveys/${encodeURIComponent(id)}/responses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ score, comment }),
+  });
+  if (!res.ok) await parseError(res, "Failed to submit survey response");
+}
+
+export async function getSurveyAnalytics(): Promise<SurveyAnalytics> {
+  const res = await fetch(`${API_BASE}/surveys/analytics`);
+  if (!res.ok) await parseError(res, "Failed to fetch survey analytics");
+  const { analytics } = (await res.json()) as { analytics: SurveyAnalytics };
+  return analytics;
+}
+
+// ---------------------------------------------------------------------------
+// Seasonal pricing
+// ---------------------------------------------------------------------------
+
+export interface SeasonalRate {
+  season: string;
+  startDate: string;
+  endDate: string;
+  multiplier: number;
+}
+
+export interface CurrentSeason {
+  season: string;
+  multiplier: number;
+  startDate: string;
+  endDate: string;
+}
+
+export interface SeasonalHistoryEntry {
+  season: string;
+  year: number;
+  multiplier: number;
+  averageRate: number;
+}
+
+export async function getSeasonalRates(): Promise<SeasonalRate[]> {
+  const res = await fetch(`${API_BASE}/seasonal-rates`);
+  if (!res.ok) await parseError(res, "Failed to fetch seasonal rates");
+  const { rates } = (await res.json()) as { rates: SeasonalRate[] };
+  return rates;
+}
+
+export async function getCurrentSeason(): Promise<CurrentSeason> {
+  const res = await fetch(`${API_BASE}/seasonal-rates/current`);
+  if (!res.ok) await parseError(res, "Failed to fetch current season");
+  const { season } = (await res.json()) as { season: CurrentSeason };
+  return season;
+}
+
+export async function getSeasonalHistory(years?: number): Promise<SeasonalHistoryEntry[]> {
   const params = new URLSearchParams();
-  if (options.days !== undefined) params.set("days", String(options.days));
-  if (options.includeSolar !== undefined) params.set("includeSolar", String(options.includeSolar));
+  if (years !== undefined) params.set("years", String(years));
   const queryString = params.toString();
   const res = await fetch(
-    `${API_BASE}/meters/${meterId}/forecast${queryString ? `?${queryString}` : ""}`,
+    `${API_BASE}/seasonal-rates/history${queryString ? `?${queryString}` : ""}`,
   );
-  if (!res.ok) {
-    const { error } = (await res.json()) as { error: string };
-    throw new Error(error ?? "Failed to fetch meter forecast");
-  }
-  return (await res.json()) as MeterForecast;
-}
-
-export interface ApplianceUsage {
-  applianceId: string;
-  name: string;
-  category: string;
-  usageKwh: number;
-  sharePercent: number;
-  trendPercent: number;
-  recommendation: string;
-}
-
-export interface ApplianceBreakdown {
-  meterId: string;
-  periodStart: string;
-  periodEnd: string;
-  totalUsageKwh: number;
-  appliances: ApplianceUsage[];
-}
-
-export async function fetchApplianceBreakdown(meterId: string): Promise<ApplianceBreakdown> {
-  const res = await fetch(`${API_BASE}/meters/${meterId}/appliances`);
-  if (!res.ok) {
-    const { error } = (await res.json()) as { error: string };
-    throw new Error(error ?? "Failed to fetch appliance breakdown");
-  }
-  return (await res.json()) as ApplianceBreakdown;
-}
-
-export type DiagnosticCommand = "reboot" | "self-test" | "check-connectivity";
-
-export interface DiagnosticResult {
-  id: string;
-  meterId: string;
-  command: DiagnosticCommand;
-  status: "pending" | "running" | "passed" | "failed";
-  startedAt: string;
-  completedAt: string | null;
-  message: string;
-  suggestedFix: string | null;
-}
-
-export async function triggerDiagnostic(
-  meterId: string,
-  command: DiagnosticCommand,
-): Promise<DiagnosticResult> {
-  const res = await fetch(`${API_BASE}/meters/${meterId}/diagnostics`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ command }),
-  });
-  if (!res.ok) {
-    const { error } = (await res.json()) as { error: string };
-    throw new Error(error ?? "Failed to trigger diagnostic");
-  }
-  return (await res.json()) as DiagnosticResult;
-}
-
-export async function fetchDiagnosticLogs(meterId: string): Promise<DiagnosticResult[]> {
-  const res = await fetch(`${API_BASE}/meters/${meterId}/diagnostic-logs`);
-  if (!res.ok) {
-    const { error } = (await res.json()) as { error: string };
-    throw new Error(error ?? "Failed to fetch diagnostic logs");
-  }
-  const { logs } = (await res.json()) as { logs: DiagnosticResult[] };
-  return logs;
-}
-
-export interface SolarFarm {
-  id: string;
-  name: string;
-  location: string;
-  capacityKw: number;
-  availableShares: number;
-  pricePerShare: number;
-  totalGenerationKwh: number;
-}
-
-export interface SolarShare {
-  farmId: string;
-  shares: number;
-  creditsKwh: number;
-  purchasedAt: string;
-}
-
-export async function listSolarFarms(): Promise<SolarFarm[]> {
-  const res = await fetch(`${API_BASE}/solar-farms`);
-  if (!res.ok) {
-    const { error } = (await res.json()) as { error: string };
-    throw new Error(error ?? "Failed to fetch solar farms");
-  }
-  const { farms } = (await res.json()) as { farms: SolarFarm[] };
-  return farms;
-}
-
-export async function buySolarShare(farmId: string, shares: number): Promise<SolarShare> {
-  const res = await fetch(`${API_BASE}/solar-farms/${farmId}/shares`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ shares }),
-  });
-  if (!res.ok) {
-    const { error } = (await res.json()) as { error: string };
-    throw new Error(error ?? "Failed to purchase solar share");
-  }
-  return (await res.json()) as SolarShare;
-}
-
-export async function getMyShares(): Promise<SolarShare[]> {
-  const res = await fetch(`${API_BASE}/solar-farms/shares/me`);
-  if (!res.ok) {
-    const { error } = (await res.json()) as { error: string };
-    throw new Error(error ?? "Failed to fetch solar shares");
-  }
-  const { shares } = (await res.json()) as { shares: SolarShare[] };
-  return shares;
+  if (!res.ok) await parseError(res, "Failed to fetch seasonal history");
+  const { history } = (await res.json()) as { history: SeasonalHistoryEntry[] };
+  return history;
 }

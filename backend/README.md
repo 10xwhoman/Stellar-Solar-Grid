@@ -53,99 +53,13 @@ Endpoints:
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
 
-## Appliance-Level Energy Monitoring (#983)
+## Grid stability and meter geofencing (#1016/#1017)
 
-The backend disaggregates whole-meter consumption into per-appliance usage so
-users can see which devices consume the most energy.
+Frequency telemetry can be published by meters on `solargrid/meters/{meterId}/frequency` with `{ "frequencyHz": 49.8, "loadKw": 2.4 }`. The bridge applies the 50 Hz threshold response and sends a relay command without routing the message through billing. HTTP equivalents are `POST /api/grid-services/frequency/readings`, `POST /api/grid-services/frequency/contributions`, and `GET /api/grid-services/frequency/:meterId/summary`.
 
-### Disaggregation Approach
+GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/meters/{meterId}/location`. The backend compares the report with the registered haversine geofence and records a `LocationVerificationFailed` result when it is outside the permitted radius. Out-of-fence meters are automatically disabled for fraud review.
 
-Appliances are identified from power signatures using ML-based clustering:
-
-- High-frequency power samples are windowed and reduced to features
-  (steady-state power draw, inrush/startup transient, duty cycle and
-  on/off edge shape).
-- Feature vectors are clustered (k-means style) into power signatures; each
-  cluster is matched against a signature library to label the appliance
-  (e.g. refrigerator, HVAC, water heater, EV charger).
-- Unmatched clusters are stored as `unknown` and can be labelled later.
-- Sub-metered devices (IoT plugs) take precedence over ML inference when a
-  sub-meter is associated with the meter.
-
-### `appliance_usage` Table
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `id` | uuid | Primary key |
-| `meter_id` | uuid | Meter the usage belongs to |
-| `appliance_id` | uuid | Identified appliance (nullable for `unknown`) |
-| `appliance_type` | text | Label, e.g. `refrigerator`, `hvac`, `unknown` |
-| `energy_kwh` | numeric | Energy attributed to the appliance for the period |
-| `share` | numeric | Fraction of total meter consumption (0–1) |
-| `period_start` | timestamptz | Start of the aggregation window |
-| `period_end` | timestamptz | End of the aggregation window |
-| `source` | text | `ml` or `submeter` |
-| `created_at` | timestamptz | Row creation time |
-
-### Endpoint
-
-- `GET /api/meters/:meterId/appliances` — returns the per-appliance breakdown
-  for the meter: each appliance's `appliance_type`, `energy_kwh`, `share` and
-  the trend over recent periods, plus the total consumption for comparison.
-
-### Saving Recommendations
-
-For each identified appliance the backend generates energy-saving
-recommendations based on its usage trend, e.g. shifting high-draw appliances
-(HVAC, EV charger, water heater) to off-peak hours, adjusting thermostat
-setpoints, or flagging always-on standby load. Recommendations are returned
-alongside the breakdown from the appliances endpoint.
-
-## Meter Remote Diagnostics (#993)
-
-Technicians can troubleshoot meters over the network instead of visiting site.
-
-### MQTT Topics
-
-| Topic | Direction | Description |
-| --- | --- | --- |
-| `solargrid/meters/{meterId}/diagnostics` | backend → meter | Diagnostic command to execute |
-| `solargrid/meters/{meterId}/diagnostics-result` | meter → backend | Result of the executed command |
-
-### Supported Commands
-
-- `reboot` — restart the meter firmware.
-- `self-test` — run the meter's built-in self-test suite.
-- `check-connectivity` — verify network/MQTT connectivity and report latency.
-
-### `diagnostic_logs` Table
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `id` | uuid | Primary key |
-| `meter_id` | uuid | Meter the diagnostic ran against |
-| `command` | text | `reboot`, `self-test` or `check-connectivity` |
-| `status` | text | `pending`, `success` or `failed` |
-| `result` | jsonb | Raw result payload reported by the meter |
-| `message` | text | Human-readable summary or error |
-| `created_at` | timestamptz | When the command was issued |
-| `completed_at` | timestamptz | When the result was received |
-
-### Endpoints
-
-- `POST /api/meters/:meterId/diagnostics` — triggers a diagnostic command;
-  publishes to `solargrid/meters/{meterId}/diagnostics` and records a
-  `pending` row in `diagnostic_logs`.
-- `GET /api/meters/:meterId/diagnostic-logs` — returns the diagnostic history
-  for the meter, newest first.
-
-### Common Issue Patterns and Suggested Fixes
-
-| Pattern | Suggested fix |
-| --- | --- |
-| No heartbeat / `check-connectivity` timeout | Check power supply and network coverage; reboot the meter |
-| Repeated `self-test` failures | Schedule on-site hardware inspection |
-| High error rate with successful connectivity | Inspect firmware version; reflash or update |
-| Meter clock drift reported by self-test | Re-sync the meter clock via NTP |
-| Frequent reboots in the log | Check for unstable power or thermal issues |
-=======
+- `POST /api/grid-services/geofences` — register the expected location and radius
+- `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
+- `GET /api/grid-services/geofences/:meterId` — status and verification history
+- `GET /api/grid-services/geofences` — data for the frontend map

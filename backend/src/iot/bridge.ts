@@ -10,7 +10,8 @@
 
 import { handleHeartbeatMessage } from "../lib/meterHealth.js";
 import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
-import { recordDiagnosticResult } from "../lib/diagnosticLogs.js";
+import { handleBatteryTelemetry } from "../lib/battery.js";
+import { handleFirmwareStatusMessage } from "../lib/firmware.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -32,6 +33,8 @@ import {
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, contractEventsProcessed } from "../lib/metrics.js";
+import { recordFrequencyReading, setFrequencyRelaySender } from "../lib/frequencyRegulation.js";
+import { verifyMeterLocation } from "../lib/geofencing.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -39,8 +42,8 @@ const TOPIC = "solargrid/meters/+/usage";
 const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
 // Issue #897: registered devices (panels, inverters, meters) publish performance telemetry here.
 const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
-// Issue #993: meters publish the results of remote diagnostic commands here.
-const DIAGNOSTICS_RESULT_TOPIC = "solargrid/meters/+/diagnostics-result";
+const FREQUENCY_TOPIC = "solargrid/meters/+/frequency";
+const LOCATION_TOPIC = "solargrid/meters/+/location";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 /** Issue #993: remote diagnostic commands a technician can trigger. */
@@ -68,6 +71,7 @@ export function sendRelayCommand(meterId: string, command: "ON" | "OFF", source:
   );
   return true;
 }
+setFrequencyRelaySender(sendRelayCommand);
 
 /**
  * Issue #993: publish a remote diagnostic command to a meter. Returns false
@@ -129,6 +133,25 @@ export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): bool
     logger.error("Device telemetry handling failed", { topic, err });
   }
   return true;
+}
+
+/** Handle grid-service IoT topics without sending them through billing. */
+export function handleGridServiceTelemetryTopic(topic: string, payload: Buffer): boolean {
+  const segments = topic.split("/");
+  if (segments.length !== 4 || segments[0] !== "solargrid" || segments[1] !== "meters") return false;
+  const meterId = segments[2];
+  try {
+    const data = JSON.parse(payload.toString()) as Record<string, unknown>;
+    if (segments[3] === "frequency") {
+      recordFrequencyReading({ meterId, frequencyHz: Number(data.frequencyHz ?? data.frequency_hz), loadKw: Number(data.loadKw ?? data.load_kw) });
+      return true;
+    }
+    if (segments[3] === "location") {
+      verifyMeterLocation({ meterId, latitude: Number(data.latitude), longitude: Number(data.longitude) });
+      return true;
+    }
+  } catch (err) { logger.warn("Grid-service telemetry rejected", { topic, err }); return true; }
+  return false;
 }
 const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process.env.BATCH_FLUSH_MS ?? 5_000);
 const EVENT_POLL_INTERVAL_MS = Number(
@@ -570,9 +593,8 @@ function startMqttBridge() {
     client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
       if (err) logger.error("MQTT device telemetry subscribe error", { err });
     });
-    client.subscribe(DIAGNOSTICS_RESULT_TOPIC, { qos: 1 }, (err) => {
-      if (err) logger.error("MQTT diagnostics result subscribe error", { err });
-    });
+    client.subscribe(FREQUENCY_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT frequency subscribe error", { err }); });
+    client.subscribe(LOCATION_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT location subscribe error", { err }); });
   });
 
   client.on("message", async (topic, payload) => {
@@ -583,8 +605,24 @@ function startMqttBridge() {
       handleHeartbeatMessage(segments[2], payload);
       return;
     }
+    if (segments[3] === "battery") {
+      try {
+        handleBatteryTelemetry(segments[2], payload);
+      } catch (err) {
+        logger.error("Battery telemetry handling failed", { topic, err });
+      }
+      return;
+    }
+    if (segments[3] === "firmware") {
+      try {
+        await handleFirmwareStatusMessage(segments[2], payload);
+      } catch (err) {
+        logger.error("Firmware status handling failed", { topic, err });
+      }
+      return;
+    }
     if (handleDeviceTelemetryTopic(topic, payload)) return;
-    if (handleDiagnosticResultTopic(topic, payload)) return;
+    if (handleGridServiceTelemetryTopic(topic, payload)) return;
     try {
       // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
       // missed ack) before they're persisted/submitted a second time.

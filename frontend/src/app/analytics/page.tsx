@@ -35,6 +35,10 @@ import {
   type MarketAnalytics,
   type Range,
 } from "@/lib/marketAnalytics";
+import {
+  getSurveyAnalytics,
+  type SurveyAnalytics,
+} from "@/lib/surveys";
 
 // Chart tokens: validated categorical slots 1-2 with their own dark steps.
 const TOKENS = `
@@ -113,6 +117,95 @@ function ChartCard({ title, subtitle, children }: { title: string; subtitle?: st
       <h2 className="font-semibold">{title}</h2>
       {subtitle && <p className="mb-2 text-xs opacity-60">{subtitle}</p>}
       <div className="h-64">{children}</div>
+    </section>
+  );
+}
+
+function SurveyAnalyticsSection() {
+  const [data, setData] = useState<SurveyAnalytics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getSurveyAnalytics()
+      .then((d) => !cancelled && setData(d))
+      .catch((e: Error) => !cancelled && setError(e.message))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <section aria-labelledby="customer-satisfaction" className="rounded-lg border border-white/10 p-4">
+      <h2 id="customer-satisfaction" className="mb-1 font-semibold">Customer satisfaction</h2>
+      <p className="mb-3 text-xs opacity-60">
+        Net Promoter Score and satisfaction metrics from delivered surveys.
+      </p>
+
+      {loading && !data && <p>Loading…</p>}
+      {error && <p className="text-red-500">Failed to load survey analytics: {error}</p>}
+
+      {data && (
+        <div className={`space-y-4 ${loading ? "opacity-60" : ""}`}>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatTile
+              label="Net Promoter Score"
+              value={data.nps == null ? "—" : String(data.nps)}
+              detail={
+                data.nps == null
+                  ? "Not enough responses"
+                  : `${data.promotersPct}% promoters · ${data.passivesPct}% passives · ${data.detractorsPct}% detractors`
+              }
+            />
+            <StatTile
+              label="Average satisfaction"
+              value={data.averageSatisfaction == null ? "—" : `${data.averageSatisfaction} / 5`}
+              detail={data.averageSatisfaction == null ? undefined : "Mean rating across responses"}
+            />
+            <StatTile
+              label="Responses"
+              value={data.totalResponses.toLocaleString()}
+              detail={`${data.totalSurveys.toLocaleString()} surveys`}
+            />
+            <StatTile
+              label="Response rate"
+              value={data.responseRatePct == null ? "—" : `${data.responseRatePct}%`}
+              detail={`${data.sentCount.toLocaleString()} sent`}
+            />
+          </div>
+
+          {data.surveys.length > 0 && (
+            <div className="max-h-96 overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-solar-accent text-left text-xs opacity-80">
+                  <tr>
+                    <th className="py-1">Survey</th>
+                    <th className="py-1 text-right">Sent</th>
+                    <th className="py-1 text-right">Responses</th>
+                    <th className="py-1 text-right">Avg score</th>
+                    <th className="py-1 text-right">NPS</th>
+                  </tr>
+                </thead>
+                <tbody className="tabular-nums">
+                  {data.surveys.map((s) => (
+                    <tr key={s.id} className="border-t border-white/5">
+                      <td className="py-1">{s.title}</td>
+                      <td className="py-1 text-right">{s.sentCount.toLocaleString()}</td>
+                      <td className="py-1 text-right">{s.responseCount.toLocaleString()}</td>
+                      <td className="py-1 text-right">{s.averageSatisfaction == null ? "—" : `${s.averageSatisfaction} / 5`}</td>
+                      <td className="py-1 text-right">{s.nps == null ? "—" : s.nps}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -476,6 +569,8 @@ export default function AnalyticsPage() {
                 </table>
               </section>
             )}
+
+            <SurveyAnalyticsSection />
 
             <section aria-labelledby="daily-data" className="rounded-lg border border-white/10 p-4">
               <div className="flex items-center justify-between">
