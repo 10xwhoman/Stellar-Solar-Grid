@@ -201,6 +201,18 @@ export function getBillingAccount(meterId: string): BillingAccount | undefined {
     | undefined;
 }
 
+/**
+ * All billing accounts (i.e. meters) linked to a Stellar address (#1003).
+ * Credit scoring has no per-user meter registry to join against, so the
+ * billing account's `stellar_address` — already the closest thing to a
+ * "which meters does this user pay for" mapping — is reused as that join
+ * key instead of inventing a new ownership table.
+ */
+export function getBillingAccountsByAddress(stellarAddress: string): BillingAccount[] {
+  return db().prepare("SELECT * FROM billing_accounts WHERE stellar_address = ?").all(stellarAddress) as
+    BillingAccount[];
+}
+
 // ── Calculation ──────────────────────────────────────────────────────────────
 
 export type UsageTotals = { units: number; cost: number };

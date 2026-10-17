@@ -12,6 +12,7 @@ mod insurance;
 mod multi_asset;
 mod leases;
 mod recs;
+mod scheduling;
 mod staking;
 mod warranty;
 #[cfg(test)]
@@ -24,6 +25,7 @@ pub use recs::{
     RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
     RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
 };
+pub use scheduling::{CircuitOverride, Schedule};
 pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 
 // ── Error types ───────────────────────────────────────────────────────────────

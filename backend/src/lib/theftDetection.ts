@@ -6,6 +6,8 @@ import { db as usageDb } from "./usageEvents.js";
 import { fireWebhook, getWebhookUrls } from "./webhookRegistry.js";
 import { logger } from "./logger.js";
 import { scoreUsageAnomaly } from "./theftScoring.js";
+import { listDevices } from "./deviceRegistry.js";
+import { notifyEmergencyContacts } from "./emergencyContacts.js";
 
 const DB_PATH = process.env.THEFT_DETECTION_DB_PATH ?? path.resolve(process.cwd(), "data", "theft-detection.sqlite");
 const SCAN_INTERVAL_MS = Number(process.env.THEFT_SCAN_INTERVAL_MS ?? 60_000);
@@ -111,6 +113,19 @@ async function notifyAlert(alert: TheftAlert): Promise<void> {
       logger.warn({ alertId: alert.id, error }, "Theft alert webhook delivery failed");
     }
   }));
+
+  // #1000 — notify the meter owner's emergency contacts on a tamper/theft
+  // alert. Best-effort: resolve the owning user_address via the device
+  // registry (meter_id -> owner) and hand off to the pure notification
+  // helper; failures here must never break theft detection itself.
+  try {
+    const [device] = listDevices({ meterId: alert.meter_id });
+    if (device?.owner) {
+      await notifyEmergencyContacts(device.owner, "tamper", alert.meter_id);
+    }
+  } catch (error) {
+    logger.warn({ alertId: alert.id, error }, "Emergency contact notification failed for theft alert");
+  }
 }
 
 function processUsageRow(row: { id: number; meter_id: string; units: number; received_at: string }): TheftAlert | null {
