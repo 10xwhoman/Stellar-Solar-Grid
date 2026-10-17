@@ -2279,6 +2279,110 @@ paths:
         "404":
           description: Event not found or not in dead-letter state
 
+  # ── Voice Assistant ───────────────────────────────────────────────────────────
+
+  /api/voice/parse:
+    post:
+      summary: Parse a natural-language voice utterance
+      description: |
+        Interprets an Alexa or Google Assistant utterance and returns the
+        recognised intent, extracted slots, confidence and locale.  Used by the
+        voice skills to resolve commands such as "check my balance",
+        "how much energy have I used" and "pay 5 XLM on meter MTR-001".
+      operationId: parseVoiceUtterance
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoiceParseRequest"
+      responses:
+        "200":
+          description: Parsed intent and slots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceParseResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/voice/payment/confirm:
+    post:
+      summary: Confirm a pending voice-initiated payment
+      description: |
+        Executes a payment previously proposed by the voice assistant after the
+        user has verbally confirmed it.  Requires the one-time confirmation code
+        issued during the proposal step.
+      operationId: confirmVoicePayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoicePaymentConfirmRequest"
+      responses:
+        "200":
+          description: Payment submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoicePaymentConfirmResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/voice/payment/cancel:
+    post:
+      summary: Cancel a pending voice-initiated payment
+      description: |
+        Discards a payment proposal created by the voice assistant so it can no
+        longer be confirmed.  Safe to call when no proposal is pending.
+      operationId: cancelVoicePayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId]
+              properties:
+                meterId:
+                  type: string
+                  maxLength: 64
+                sessionId:
+                  type: string
+      responses:
+        "200":
+          description: Proposal cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled: { type: boolean }
+                  meterId: { type: string }
+                  speech: { type: string }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Metrics ───────────────────────────────────────────────────────────────────
 
   /api/metrics/summary:
