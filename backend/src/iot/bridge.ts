@@ -10,11 +10,14 @@
 
 import { handleHeartbeatMessage } from "../lib/meterHealth.js";
 import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
+import { handleBatteryTelemetry } from "../lib/battery.js";
+import { handleFirmwareStatusMessage } from "../lib/firmware.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
   persistAndSubmitUsageEvent,
   insertSubmittedUsageEvents,
+  recordGridExport,
   getKV,
   setKV,
   getTypicalWeeklyUsageStroops,
@@ -31,6 +34,8 @@ import {
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, contractEventsProcessed } from "../lib/metrics.js";
+import { recordFrequencyReading, setFrequencyRelaySender } from "../lib/frequencyRegulation.js";
+import { verifyMeterLocation } from "../lib/geofencing.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -38,7 +43,13 @@ const TOPIC = "solargrid/meters/+/usage";
 const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
 // Issue #897: registered devices (panels, inverters, meters) publish performance telemetry here.
 const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
+const FREQUENCY_TOPIC = "solargrid/meters/+/frequency";
+const LOCATION_TOPIC = "solargrid/meters/+/location";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
+
+/** Issue #993: remote diagnostic commands a technician can trigger. */
+export const DIAGNOSTIC_COMMANDS = ["reboot", "self_test", "check_connectivity"] as const;
+export type DiagnosticCommand = (typeof DIAGNOSTIC_COMMANDS)[number];
 
 let mqttClient: mqtt.MqttClient | null = null;
 export function getMqttClient() { return mqttClient; }
@@ -61,6 +72,96 @@ export function sendRelayCommand(meterId: string, command: "ON" | "OFF", source:
   );
   return true;
 }
+setFrequencyRelaySender(sendRelayCommand);
+
+/**
+ * Issue #993: publish a remote diagnostic command to a meter. Returns false
+ * when the MQTT bridge is not connected so callers can surface a clear error
+ * instead of silently dropping the request.
+ */
+export function sendDiagnosticCommand(meterId: string, command: DiagnosticCommand): boolean {
+  if (!mqttClient?.connected) return false;
+  const topic = `solargrid/meters/${meterId}/diagnostics`;
+  const requestId = crypto.randomUUID();
+  logger.info(
+    { event: "diagnostic_command", meterId, command, topic, requestId },
+    "Sending remote diagnostic command",
+  );
+  mqttClient.publish(
+    topic,
+    JSON.stringify({ cmd: command, requestId, timestamp: new Date().toISOString() }),
+    { qos: 1 },
+    (err) => { if (err) logger.error({ meterId, command, err }, "Failed to publish diagnostic command"); },
+  );
+  return true;
+}
+
+/**
+ * Issue #993: route inbound diagnostic results to the diagnostic log store.
+ * Returns true when the topic matched the diagnostics-result pattern.
+ */
+export function handleDiagnosticResultTopic(topic: string, payload: Buffer): boolean {
+  const segments = topic.split("/");
+  if (
+    segments.length !== 4 ||
+    segments[0] !== "solargrid" ||
+    segments[1] !== "meters" ||
+    segments[3] !== "diagnostics-result"
+  ) {
+    return false;
+  }
+  try {
+    recordDiagnosticResult(segments[2], payload);
+  } catch (err) {
+    logger.error("Diagnostic result handling failed", { topic, err });
+  }
+  return true;
+}
+
+/**
+ * Issue #988: handle a power-quality reading published by a meter.
+ * Payload: { voltage, frequency, thd }. Malformed payloads are logged and
+ * ignored so the bridge keeps running.
+ */
+export function handlePowerQualityMessage(meterId: string, payload: Buffer): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(payload.toString());
+  } catch (err) {
+    logger.error("Malformed power-quality MQTT payload (not JSON), skipping", {
+      meterId,
+      raw: payload.toString(),
+      err,
+    });
+    return;
+  }
+
+  const { voltage, frequency, thd } = (raw ?? {}) as {
+    voltage?: unknown;
+    frequency?: unknown;
+    thd?: unknown;
+  };
+
+  if (
+    typeof voltage !== "number" || !Number.isFinite(voltage) ||
+    typeof frequency !== "number" || !Number.isFinite(frequency) ||
+    typeof thd !== "number" || !Number.isFinite(thd)
+  ) {
+    logger.error("Invalid power-quality MQTT payload (non-finite values), skipping", {
+      meterId,
+      raw: payload.toString(),
+    });
+    return;
+  }
+
+  try {
+    recordPowerQualitySample(meterId, { voltage, frequency, thd });
+    analyzePowerQuality(meterId);
+    logger.info("Power quality sample recorded", { meterId, voltage, frequency, thd });
+  } catch (err) {
+    logger.error("Power quality handling failed", { meterId, err });
+  }
+}
 
 export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): boolean {
   const segments = topic.split("/");
@@ -78,6 +179,25 @@ export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): bool
     logger.error("Device telemetry handling failed", { topic, err });
   }
   return true;
+}
+
+/** Handle grid-service IoT topics without sending them through billing. */
+export function handleGridServiceTelemetryTopic(topic: string, payload: Buffer): boolean {
+  const segments = topic.split("/");
+  if (segments.length !== 4 || segments[0] !== "solargrid" || segments[1] !== "meters") return false;
+  const meterId = segments[2];
+  try {
+    const data = JSON.parse(payload.toString()) as Record<string, unknown>;
+    if (segments[3] === "frequency") {
+      recordFrequencyReading({ meterId, frequencyHz: Number(data.frequencyHz ?? data.frequency_hz), loadKw: Number(data.loadKw ?? data.load_kw) });
+      return true;
+    }
+    if (segments[3] === "location") {
+      verifyMeterLocation({ meterId, latitude: Number(data.latitude), longitude: Number(data.longitude) });
+      return true;
+    }
+  } catch (err) { logger.warn("Grid-service telemetry rejected", { topic, err }); return true; }
+  return false;
 }
 const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process.env.BATCH_FLUSH_MS ?? 5_000);
 const EVENT_POLL_INTERVAL_MS = Number(
@@ -164,6 +284,70 @@ interface Reading {
    * timestamp/counter when present; otherwise fall back to arrival time. */
   timestamp: number;
   sequence?: number;
+}
+
+/**
+ * Issue #990: a bidirectional meter reports grid import and export
+ * separately. A reading is treated as an export when it carries an explicit
+ * `direction`/`export` marker, or when its `units` are negative (a negative
+ * cumulative delta means the meter pushed energy back to the grid).
+ */
+function isGridExportReading(raw: Record<string, unknown>, units: number): boolean {
+  const direction = raw.direction;
+  if (typeof direction === "string") {
+    const normalised = direction.toLowerCase();
+    if (normalised === "export" || normalised === "out") return true;
+    if (normalised === "import" || normalised === "in") return false;
+  }
+  if (raw.export === true) return true;
+  if (raw.export === false) return false;
+  return units < 0;
+}
+
+/**
+ * Issue #990: submit a grid export reading to the contract's
+ * `record_grid_export` entry point and persist it locally so the export
+ * history endpoint can serve it. Returns the on-chain tx hash when the
+ * submission succeeded.
+ */
+async function submitGridExport(
+  meterId: string,
+  units: number,
+  cost: number,
+  sourceTopic: string,
+): Promise<string | null> {
+  const exportUnits = Math.abs(units);
+  let txHash: string | null = null;
+  try {
+    txHash = await adminInvoke("record_grid_export", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+      StellarSdk.nativeToScVal(BigInt(exportUnits), { type: "u64" }),
+      StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
+    ]);
+    logger.info("Grid export recorded on-chain", {
+      event: "grid_export_recorded",
+      meterId,
+      units: exportUnits,
+      cost,
+      txHash,
+    });
+  } catch (err) {
+    logger.error("Grid export submission error", { meterId, units: exportUnits, err });
+  }
+
+  try {
+    recordGridExport({
+      meterId,
+      units: exportUnits,
+      cost,
+      sourceTopic,
+      onChainTxHash: txHash,
+    });
+  } catch (err) {
+    logger.error("Failed to persist grid export to local DB", { meterId, err });
+  }
+
+  return txHash;
 }
 
 /**
@@ -364,6 +548,8 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     return;
   }
 
+  if (handleDiagnosticResultTopic(topic, payload)) return;
+
   const meterId = topic.split("/")[2];
   const rawStr = payload.toString();
 
@@ -389,6 +575,17 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
   }
 
   const { units, cost } = parsed.data;
+
+  if (isGridExportReading(raw as Record<string, unknown>, units)) {
+    logger.info("Grid export received from IoT bridge", {
+      event: "grid_export_received",
+      meterId,
+      units,
+      cost,
+    });
+    await submitGridExport(meterId, units, cost, topic);
+    return;
+  }
 
   logger.info("Usage update received from IoT bridge", {
     meterId,
@@ -517,6 +714,8 @@ function startMqttBridge() {
     client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
       if (err) logger.error("MQTT device telemetry subscribe error", { err });
     });
+    client.subscribe(FREQUENCY_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT frequency subscribe error", { err }); });
+    client.subscribe(LOCATION_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT location subscribe error", { err }); });
   });
 
   client.on("message", async (topic, payload) => {
@@ -527,7 +726,24 @@ function startMqttBridge() {
       handleHeartbeatMessage(segments[2], payload);
       return;
     }
+    if (segments[3] === "battery") {
+      try {
+        handleBatteryTelemetry(segments[2], payload);
+      } catch (err) {
+        logger.error("Battery telemetry handling failed", { topic, err });
+      }
+      return;
+    }
+    if (segments[3] === "firmware") {
+      try {
+        await handleFirmwareStatusMessage(segments[2], payload);
+      } catch (err) {
+        logger.error("Firmware status handling failed", { topic, err });
+      }
+      return;
+    }
     if (handleDeviceTelemetryTopic(topic, payload)) return;
+    if (handleGridServiceTelemetryTopic(topic, payload)) return;
     try {
       // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
       // missed ack) before they're persisted/submitted a second time.
@@ -556,6 +772,21 @@ function startMqttBridge() {
         return;
       }
       const { units, cost, timestamp, sequence } = parsed.data;
+
+      // Issue #990: bidirectional meters report exports separately — route
+      // them to record_grid_export instead of the import/usage path.
+      if (isGridExportReading(raw as Record<string, unknown>, units)) {
+        logger.info("Grid export received from IoT bridge", {
+          event: "grid_export_received",
+          meterId,
+          units,
+          cost,
+          timestamp,
+          sequence,
+        });
+        await submitGridExport(meterId, units, cost, topic);
+        return;
+      }
 
       logger.info("Usage update received from IoT bridge", {
         meterId,

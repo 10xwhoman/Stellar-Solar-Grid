@@ -31,6 +31,31 @@ function resetReconnectAttempts(): void {
 // can flag meters that have gone silent due to connectivity issues.
 const lastSeenByMeter = new Map<string, number>();
 
+// Issue #990: bidirectional meters report both grid import and grid export
+// readings. Normalise the direction so the bridge can distinguish the two
+// without misclassifying export readings as imports (or vice versa).
+export type MeterReadingDirection = 'import' | 'export';
+
+/**
+ * Determine the direction of a meter reading from an inbound MQTT payload.
+ * Supports an explicit `direction` field as well as an `export` boolean
+ * flag. Anything that is not clearly an export is treated as an import,
+ * which preserves the existing behaviour for unidirectional meters.
+ */
+export function getReadingDirection(data: unknown): MeterReadingDirection {
+  if (data && typeof data === 'object') {
+    const record = data as Record<string, unknown>;
+    const direction = record.direction;
+    if (typeof direction === 'string' && direction.toLowerCase() === 'export') {
+      return 'export';
+    }
+    if (record.export === true || record.export === 'true') {
+      return 'export';
+    }
+  }
+  return 'import';
+}
+
 /**
  * Record that a meter has just reported. Called on every inbound MQTT
  * message so `last_seen` stays current for offline detection.
@@ -88,12 +113,21 @@ export function getMqttClient(): MqttClient {
 
     // Issue #853: update last_seen on every inbound MQTT message so offline
     // detection has an up-to-date view of meter connectivity.
+    // Issue #990: bidirectional meters publish both import and export
+    // readings; both must still refresh last_seen and be tagged with their
+    // direction so the bridge can route export readings to credit tracking.
     client.on('message', (topic, payload) => {
       try {
         const data = JSON.parse(payload.toString());
         const meterId = data?.meterId ?? data?.meter_id ?? topic.split('/').pop();
         if (meterId) {
           recordMeterLastSeen(String(meterId));
+          const direction = getReadingDirection(data);
+          logger.debug('Recorded meter reading', {
+            meterId: String(meterId),
+            direction,
+            topic,
+          });
         }
       } catch (err) {
         logger.warn('Failed to parse MQTT message for last_seen tracking', { topic, err });

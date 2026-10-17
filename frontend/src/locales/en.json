@@ -218,25 +218,43 @@
     "estimatedSavings": "Estimated weekly savings",
     "actualSavings": "Actual weekly savings"
   },
-  "voiceAssistant": {
-    "title": "Voice Assistant",
-    "description": "Control your meter hands-free with Alexa or Google Assistant. Check your balance, review usage, and make payments using simple voice commands.",
-    "enablePayments": "Enable voice payments",
-    "language": "Voice language",
-    "supportedAssistants": "Supported assistants",
-    "alexa": "Amazon Alexa",
-    "google": "Google Assistant",
-    "linkAssistant": "Link Assistant",
-    "paymentRequiresPin": "Payments made by voice require your PIN for confirmation.",
-    "confirmPayment": "Confirm payment",
-    "cancelPayment": "Cancel payment",
-    "paymentSuccess": "Payment completed successfully.",
-    "paymentFailed": "Payment could not be completed. Please try again.",
-    "utterances": {
-      "balance": "Alexa, ask SolarGrid what my meter balance is",
-      "usage": "Hey Google, ask SolarGrid how much energy I used this week",
-      "status": "Alexa, ask SolarGrid for my meter status",
-      "pay": "Hey Google, ask SolarGrid to pay 10 XLM for my meter"
-    }
+  "delegation": {
+    "title": "Account Delegation",
+    "addDelegate": "Add Delegate",
+    "delegateAddress": "Delegate Address",
+    "permissions": "Permissions",
+    "viewOnly": "View Only",
+    "pay": "Pay",
+    "admin": "Admin",
+    "expiry": "Expiry",
+    "remove": "Remove",
+    "noDelegates": "No delegates added yet.",
+    "added": "Delegate added successfully.",
+    "removed": "Delegate removed successfully."
+  },
+  "technician": {
+    "title": "Technician Portal",
+    "workOrders": "Work Orders",
+    "assignedTo": "Assigned To",
+    "complete": "Complete",
+    "notes": "Notes",
+    "scanMeter": "Scan Meter",
+    "uploadPhoto": "Upload Photo",
+    "noOrders": "No work orders assigned."
+  },
+  "seasonal": {
+    "currentSeason": "Current Season",
+    "multiplier": "Rate Multiplier",
+    "history": "Seasonal History",
+    "comparison": "Seasonal Comparison"
+  },
+  "surveys": {
+    "title": "Customer Satisfaction Surveys",
+    "nps": "Net Promoter Score",
+    "promoters": "Promoters",
+    "passives": "Passives",
+    "detractors": "Detractors",
+    "responses": "Responses",
+    "averageScore": "Average Score"
   }
 }

@@ -123,6 +123,23 @@ function applyUsageEventSchema(database: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_summary_meter_date
       ON usage_summary (meter_id, date DESC);
+
+    -- #990: grid export credit tracking. Each row records a bidirectional
+    -- meter reading's export side (kWh delivered to the grid) along with the
+    -- credit earned at the configured export rate, so users can be settled.
+    CREATE TABLE IF NOT EXISTS grid_exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meter_id TEXT NOT NULL,
+      kwh REAL NOT NULL,
+      credit TEXT NOT NULL,
+      rate TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      on_chain_tx_hash TEXT,
+      submitted_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_grid_exports_meter_received_at
+      ON grid_exports (meter_id, received_at DESC);
   `);
 }
 
@@ -198,6 +215,118 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
   usageEvents.inc({ status: "pending" });
 
   return getUsageEventById(Number(id))!;
+}
+
+export type GridExportRecord = {
+  id: number;
+  meter_id: string;
+  kwh: number;
+  credit: string;
+  rate: string;
+  received_at: string;
+  on_chain_tx_hash: string | null;
+  submitted_at: string | null;
+};
+
+export type CreateGridExportInput = {
+  meterId: string;
+  kwh: number;
+  credit: number;
+  rate: number;
+  receivedAt?: string;
+  onChainTxHash?: string | null;
+  submittedAt?: string | null;
+};
+
+/** Persist a grid export reading and the credit earned for it (#990). */
+export function recordGridExport(input: CreateGridExportInput): GridExportRecord {
+  const receivedAt = input.receivedAt ?? new Date().toISOString();
+  const id = pool.withConnection((database) => {
+    const statement = database.prepare(`
+      INSERT INTO grid_exports (
+        meter_id,
+        kwh,
+        credit,
+        rate,
+        received_at,
+        on_chain_tx_hash,
+        submitted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    return statement.run(
+      input.meterId,
+      input.kwh,
+      String(input.credit),
+      String(input.rate),
+      receivedAt,
+      input.onChainTxHash ?? null,
+      input.submittedAt ?? null,
+    ).lastInsertRowid;
+  });
+
+  return db()
+    .prepare("SELECT * FROM grid_exports WHERE id = ?")
+    .get(Number(id)) as GridExportRecord;
+}
+
+/** Paginated export history for a meter, newest first (#990). */
+export function getGridExportHistory(
+  meterId: string,
+  page: number,
+  pageSize: number,
+): {
+  exports: GridExportRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
+} {
+  const offset = (page - 1) * pageSize;
+
+  const exports = db()
+    .prepare(
+      "SELECT * FROM grid_exports WHERE meter_id = ? " +
+      "ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?",
+    )
+    .all(meterId, pageSize, offset) as GridExportRecord[];
+
+  const { count } = db()
+    .prepare("SELECT COUNT(*) as count FROM grid_exports WHERE meter_id = ?")
+    .get(meterId) as { count: number };
+
+  return {
+    exports,
+    page,
+    pageSize,
+    total: count,
+    hasMore: offset + pageSize < count,
+  };
+}
+
+/** Aggregate import/export kWh and export credits for a meter (#990). */
+export function getGridExportTotals(meterId: string): {
+  importedKwh: number;
+  exportedKwh: number;
+  totalCredit: number;
+  exportCount: number;
+} {
+  const importRow = db()
+    .prepare("SELECT COALESCE(SUM(units), 0) AS units FROM usage_events WHERE meter_id = ?")
+    .get(meterId) as { units: number };
+
+  const exportRow = db()
+    .prepare(
+      "SELECT COALESCE(SUM(kwh), 0) AS kwh, COALESCE(SUM(CAST(credit AS REAL)), 0) AS credit, " +
+      "COUNT(*) AS count FROM grid_exports WHERE meter_id = ?",
+    )
+    .get(meterId) as { kwh: number; credit: number; count: number };
+
+  return {
+    importedKwh: Number(importRow?.units ?? 0) / 1000,
+    exportedKwh: Number(exportRow?.kwh ?? 0),
+    totalCredit: Number(exportRow?.credit ?? 0),
+    exportCount: Number(exportRow?.count ?? 0),
+  };
 }
 
 export function getUsageHistory(

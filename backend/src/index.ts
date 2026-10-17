@@ -1,5 +1,4 @@
 import "dotenv/config";
-import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "module";
@@ -25,7 +24,6 @@ import { webhookRouter } from "./routes/webhooks.js";
 import { auditRouter } from "./routes/audit.js";
 import { socialRouter } from "./routes/social.js";
 import { startLeaderboardScheduler } from "./lib/social.js";
-import { startIoTBridge } from "./iot/bridge.js";
 import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
@@ -38,7 +36,6 @@ import { loadBalancingRouter } from "./routes/loadBalancing.js";
 import { twoFactorRouter } from "./routes/twoFactor.js";
 import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
 import { orderBookRouter, attachOrderBookWebSocket } from "./routes/orderBook.js";
-import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { weatherRouter } from "./routes/weather.js";
@@ -62,14 +59,18 @@ import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
 import { startVoiceTokenPruner, stopVoiceTokenPruner } from "./lib/voiceAssistant.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import arbitrageBotRouter from "./routes/arbitrageBot.js";
-import { startBillingScheduler } from "./lib/billing.js";
+import { startBillingScheduler, startInstallmentScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
 import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
 import { consumptionAnalyticsRouter } from "./routes/consumptionAnalytics.js";
 import { recsRouter } from "./routes/recs.js";
+import { leasesRouter } from "./routes/leases.js";
+import { chatbotRouter } from "./routes/chatbot.js";
+import { complianceReportsRouter } from "./routes/complianceReports.js";
 import { portfolioRouter } from "./routes/portfolio.js";
 import { vppRouter } from "./routes/vpp.js";
+import { gridServicesRouter } from "./routes/gridServices.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startResilienceMonitor } from "./lib/gridResilience.js";
@@ -112,6 +113,8 @@ import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
+import { workOrdersRouter } from "./routes/workOrders.js";
+import { surveysRouter } from "./routes/surveys.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -188,6 +191,10 @@ app.use("/api/meters/map", meterMapRouter);
 app.use("/api/keys", writeLimiter, apiKeysRouter);
 app.use("/api/meters", meterHealthRouter);
 app.use("/api/meters", predictionRouter);
+// #982: weather-aware forecast endpoint (GET /api/meters/:meterId/forecast)
+app.use("/api/meters", createWeatherForecastRouter());
+// #983: appliance breakdown endpoint (GET /api/meters/:meterId/appliances)
+app.use("/api/meters", createApplianceRouter());
 startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
@@ -231,8 +238,13 @@ setRelaySender(sendRelayCommand);
 initPriceHeatmap();
 startPriceSimulation();
 startBillingScheduler();
+startInstallmentScheduler();
 startCompetitionScheduler();
 startEnergyForecastRetraining();
+// #982: retrain the weather-aware forecasting model alongside the consumption model
+startWeatherForecastRetraining();
+// #983: retrain the appliance disaggregation model
+startApplianceDisaggregationRetraining();
 startSmartHomeScheduler();
 // #877: dynamic pricing
 app.use("/api/pricing", pricingRouter);
@@ -247,9 +259,21 @@ app.use("/api/orderbook", orderBookRouter);
 app.use("/api/admin/dashboard", adminDashboardRouter);
 // #941: grid resilience scoring
 app.use("/api/grid", gridResilienceRouter);
+app.use("/api/grid-services", gridServicesRouter);
 startResilienceMonitor();
 // #939: energy data privacy controls
 app.use("/api/privacy", writeLimiter, privacyRouter);
+// #991: contractor/technician portal
+app.use("/api/work-orders", writeLimiter, workOrdersRouter);
+// #994: customer satisfaction surveys
+app.use("/api/surveys", writeLimiter, surveysRouter);
+
+// #979: scheduled maintenance windows
+app.use("/api/maintenance", writeLimiter, maintenanceRouter);
+startMaintenanceScheduler();
+
+// #985: automatic meter firmware updates (OTA)
+app.use("/api/firmware", writeLimiter, firmwareRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -319,14 +343,19 @@ const httpServer = app.listen(PORT, () => {
   } catch (err) {
     logger.error("Failed to start IoT bridge", { err });
   }
+  // #993: listen for diagnostic results reported by meters over MQTT
+  try {
+    startDiagnosticResultListener();
+  } catch (err) {
+    logger.error("Failed to start diagnostic result listener", { err });
+  }
 });
 attachTradingWebSocket(httpServer);
 attachOrderBookWebSocket(httpServer);
-const port = Number(process.env.PORT) || 3000;
-const httpServer = createServer(app);
 attachWidgetLiveUpdates(httpServer);
-httpServer.listen(port, () => {
-  console.log(`Backend listening on port ${port}`);
+
+httpServer.listen(PORT, () => {
+  console.log(`Backend listening on port ${PORT}`);
   startTheftMonitor();
   startEventIndexer();
   startRecommendationWorker();
@@ -342,9 +371,25 @@ app.use("/api/analytics/patterns", consumptionAnalyticsRouter);
 
 // #927: Renewable Energy Credit marketplace
 app.use("/api/recs", recsRouter);
+app.use("/api/leases", leasesRouter);
+app.use("/api/chatbot", chatbotRouter);
+app.use("/api/reports", complianceReportsRouter);
 
 // #926: Energy portfolio management
 app.use("/api/portfolio", portfolioRouter);
 
 // #925: Virtual power plant aggregation
 app.use("/api/vpp", vppRouter);
+
+// #1006: Meter Network Topology Visualization
+import { networkTopologyRouter } from "./routes/networkTopology.js";
+app.use("/api/network", networkTopologyRouter);
+
+// #1005: White-Label Provider Customization
+import { providersBrandingRouter } from "./routes/providersBranding.js";
+app.use("/api/providers", providersBrandingRouter);
+
+// #1004: Blockchain Transaction History Explorer
+import { transactionsRouter } from "./routes/transactions.js";
+app.use("/api/transactions", transactionsRouter);
+
