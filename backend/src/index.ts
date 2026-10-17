@@ -57,7 +57,7 @@ import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import arbitrageBotRouter from "./routes/arbitrageBot.js";
-import { startBillingScheduler } from "./lib/billing.js";
+import { startBillingScheduler, startInstallmentScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
 import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
@@ -232,6 +232,7 @@ setRelaySender(sendRelayCommand);
 initPriceHeatmap();
 startPriceSimulation();
 startBillingScheduler();
+startInstallmentScheduler();
 startCompetitionScheduler();
 startEnergyForecastRetraining();
 // #982: retrain the weather-aware forecasting model alongside the consumption model

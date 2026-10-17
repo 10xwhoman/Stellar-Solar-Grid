@@ -1868,6 +1868,131 @@ paths:
                   code:
                     type: string
 
+  # ── Installments ─────────────────────────────────────────────────────────────
+
+  /api/payments/installments:
+    post:
+      summary: Create an installment payment plan (admin only)
+      description: |
+        Creates a new installment plan for a meter purchase or upgrade. The
+        total amount is split into the requested number of installments, and
+        deductions are scheduled automatically from the payer's balance.
+      operationId: createInstallmentPlan
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInstallmentPlanRequest"
+      responses:
+        "201":
+          description: Installment plan created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlan"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/payments/installments/{planId}:
+    get:
+      summary: Get an installment plan by id
+      operationId: getInstallmentPlan
+      parameters:
+        - name: planId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Installment plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlan"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/payments/installments/payer/{address}:
+    get:
+      summary: List installment plans for a payer
+      operationId: getInstallmentPlansByPayer
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema: { type: string }
+          description: Stellar account address of the payer
+      responses:
+        "200":
+          description: Installment plans for the payer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlanList"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/payments/installments/{planId}/pay:
+    post:
+      summary: Make a payment toward an installment plan (admin only)
+      description: |
+        Charges the payer's balance for the next installment. When `amount` is
+        omitted the scheduled installment amount is used. Emits an
+        `InstallmentPaid` event on success.
+      operationId: payInstallment
+      security:
+        - AdminKey: []
+      parameters:
+        - name: planId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayInstallmentRequest"
+      responses:
+        "200":
+          description: Installment paid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlan"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/payments/installments/process-due:
+    post:
+      summary: Process all due installments (admin only)
+      description: |
+        Runs the automatic deduction sweep: charges every plan whose `nextDue`
+        has passed, and marks plans as defaulted when the grace period has
+        elapsed without a successful payment. Emits `InstallmentPaid` and
+        `InstallmentDefaulted` events.
+      operationId: processDueInstallments
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Sweep result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessDueInstallmentsResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Usage Events ─────────────────────────────────────────────────────────────
 
   /api/usage-events:

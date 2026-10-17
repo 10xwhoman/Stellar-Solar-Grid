@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import Navbar from "@/components/Navbar";
 import OfflinePaymentModal from "@/components/OfflinePaymentModal";
+import InstallmentCalculator from "@/components/InstallmentCalculator";
+import InstallmentTracker from "@/components/InstallmentTracker";
 import { useToast } from "@/components/ToastProvider";
 import { useWalletStore } from "@/store/walletStore";
 import { usePaymentStore } from "@/store/paymentStore";
@@ -13,6 +15,7 @@ import { env } from "@/lib/env";
 
 type Plan = "Daily" | "Weekly" | "Monthly" | "Usage";
 type Status = "idle" | "loading";
+type PaymentMode = "one-off" | "installment";
 
 const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Daily", label: "Daily", desc: "Billed every 24 hours" },
@@ -349,7 +352,12 @@ export default function PayPage() {
             </div>
           )}
 
-          {!address ? (
+          {paymentMode === "installment" ? (
+            <div className="space-y-6">
+              <InstallmentCalculator meterId={meterId} />
+              {address && <InstallmentTracker address={address} />}
+            </div>
+          ) : !address ? (
             <div className="rounded-xl border border-white/10 bg-solar-accent p-8 text-center">
               <p className="text-gray-400 mb-4">Connect your wallet to make a payment.</p>
               <button

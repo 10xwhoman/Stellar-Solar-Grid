@@ -182,6 +182,12 @@ const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
 const ADMIN_TRANSFER_TTL: u64 = 7 * SECONDS_PER_DAY;
+/// Sequential counter for installment plans (#987).
+const PLAN_COUNT: Symbol = symbol_short!("PLAN_CNT");
+/// Billing interval between installments: 30 days (#987).
+const INSTALLMENT_INTERVAL_SECS: u64 = 30 * SECONDS_PER_DAY;
+/// Maximum number of installments allowed per plan (#987).
+const MAX_INSTALLMENTS: u32 = 60;
 /// Max number of metadata key-value pairs per meter (Issue #691).
 const MAX_METADATA_PAIRS: u32 = 10;
 /// Max characters per metadata value (Issue #691).
