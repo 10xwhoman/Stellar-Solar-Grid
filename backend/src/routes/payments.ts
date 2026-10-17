@@ -9,6 +9,10 @@ import { idempotency } from "../middleware/idempotency.js";
 import { sendPaymentWebhook, stroopsToXlm } from "../lib/paymentWebhook.js";
 import { saveReceipt } from "../lib/receipts.js";
 import { emailTrade } from "../lib/billing.js";
+import { sendSurveyEmail } from "../lib/surveys.js";
+import { getMeterBillingEmail } from "../lib/meters.js";
+
+const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL ?? "http://localhost:5173";
 
 export const paymentsRouter = Router();
 
@@ -137,6 +141,29 @@ paymentsRouter.post(
         const plan = await getMeterPlan(meterId);
 
         await emailTrade({ meterId, payer, amountXlm: stroopsToXlm(amount), transactionHash: hash });
+
+        // Issue #994: trigger a satisfaction survey email after a successful
+        // payment. Failures here must never affect the payment response.
+        try {
+          const billingEmail = await getMeterBillingEmail(meterId);
+          if (billingEmail) {
+            const surveyId = `payment-${hash}`;
+            const surveyUrl = `${PUBLIC_APP_URL}/surveys/${surveyId}?meter=${meterId}`;
+            await sendSurveyEmail({
+              to: billingEmail,
+              meterId,
+              surveyId,
+              surveyUrl,
+              trigger: "payment",
+            });
+          }
+        } catch (surveyErr: any) {
+          logger.error("Failed to send payment survey email", {
+            meterId,
+            hash,
+            error: surveyErr.message,
+          });
+        }
 
         await sendPaymentWebhook({
           meter_id: meterId,

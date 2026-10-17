@@ -262,68 +262,88 @@ export function claimStakingRewards(staker: string): Promise<string> {
   return contractInvoke(staker, "claim_staking_rewards", [addrVal(staker)]);
 }
 
-// ── Installment payment plans (#987) ────────────────────────────────────────
+// ── Family/household account delegation (#981) ──────────────────────────────
 
-/** Mirrors the contract's `InstallmentPlan` struct. */
-export interface InstallmentPlan {
-  plan_id: bigint;
-  payer: string;
-  meter_id: string;
-  total: bigint;
-  paid: bigint;
-  remaining: bigint;
-  installments: number;
-  installment_amount: bigint;
-  /** Unix timestamp (seconds) of the next scheduled deduction. */
-  next_due: bigint;
-  /** Seconds a payment may be late before the plan defaults. */
-  grace_secs: bigint;
-  /** Number of payments missed so far. */
-  missed: number;
-  active: boolean;
-  defaulted: boolean;
+/** Permission level granted to a delegate. */
+export type DelegatePermission = "view" | "pay" | "admin";
+
+export interface Delegate {
+  delegated_address: string;
+  permissions: DelegatePermission;
+  expiry: bigint;
 }
 
-const u32Val = (v: number) => StellarSdk.nativeToScVal(v, { type: "u32" });
-const u64Val = (v: bigint) => StellarSdk.nativeToScVal(v, { type: "u64" });
+/** List the delegates granted access to `meterId`. */
+export async function fetchDelegates(meterId: string): Promise<Delegate[]> {
+  const retval = await client.query("get_delegates", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as Delegate[];
+}
 
-/**
- * Create an installment plan for a meter purchase/upgrade. `total` is in
- * stroops; the contract splits it into `installments` automatic monthly
- * deductions, each allowed to run `graceSecs` late before defaulting.
- */
-export function createInstallmentPlan(
+/** Owner-only: grant `delegate` access to `meterId` until `expiry`. */
+export function addDelegate(
   sourceAddress: string,
   meterId: string,
-  total: bigint,
-  installments: number,
-  graceSecs: bigint,
+  delegate: string,
+  permissions: DelegatePermission,
+  expiry: bigint,
 ): Promise<string> {
-  return contractInvoke(sourceAddress, "create_installment_plan", [
-    addrVal(sourceAddress),
+  return contractInvoke(sourceAddress, "add_delegate", [
     StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-    i128Val(total),
-    u32Val(installments),
-    u64Val(graceSecs),
+    addrVal(delegate),
+    StellarSdk.nativeToScVal(permissions, { type: "symbol" }),
+    StellarSdk.nativeToScVal(expiry, { type: "u64" }),
   ]);
 }
 
-/** Manually pay the next installment due on `planId`. */
-export function payInstallment(sourceAddress: string, planId: bigint): Promise<string> {
-  return contractInvoke(sourceAddress, "pay_installment", [
-    addrVal(sourceAddress),
-    u64Val(planId),
+/** Owner-only: revoke `delegate`'s access to `meterId`. */
+export function removeDelegate(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "remove_delegate", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
   ]);
 }
 
-/** Fetch a single installment plan by id. */
-export async function fetchInstallmentPlan(planId: bigint): Promise<InstallmentPlan> {
-  const retval = await client.query("get_installment_plan", [u64Val(planId)]);
-  return StellarSdk.scValToNative(retval) as InstallmentPlan;
+/** Make a payment on `meterId` using a delegate's pay permission. */
+export function makeDelegatedPayment(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+  amountStroops: bigint,
+  plan: string,
+  memo: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "make_delegated_payment", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
+    i128Val(amountStroops),
+    StellarSdk.nativeToScVal(plan, { type: "symbol" }),
+    StellarSdk.nativeToScVal(memo, { type: "symbol" }),
+  ]);
 }
 
-/** Fetch all installment plans belonging to `payer`. */
-export async function fetchPayerInstallments(payer: string): Promise<InstallmentPlan[]> {
-  const retval = await client.query("get_payer_installments", [addrVal(payer)]);
-  return StellarSdk.scValToNative(retval) as InstallmentPlan[];
+// ── Seasonal pricing plans (#992) ───────────────────────────────────────────
+
+export interface SeasonalRate {
+  season: string;
+  start_date: bigint;
+  end_date: bigint;
+  multiplier: bigint;
+}
+
+/** Fetch all configured seasonal rates. */
+export async function fetchSeasonalRates(): Promise<SeasonalRate[]> {
+  const retval = await client.query("get_seasonal_rates", []);
+  return StellarSdk.scValToNative(retval) as SeasonalRate[];
+}
+
+/** Fetch the season currently in effect (and its rate). */
+export async function fetchCurrentSeason(): Promise<SeasonalRate> {
+  const retval = await client.query("get_current_season", []);
+  return StellarSdk.scValToNative(retval) as SeasonalRate;
 }

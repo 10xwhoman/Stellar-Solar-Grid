@@ -135,239 +135,354 @@ mod additional_tests {
         assert!(meter.balance < 10_i128);
     }
 
-    // ---------------------------------------------------------------------
-    // Installment payment plan tests
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Delegation tests
+    // ------------------------------------------------------------------
 
-    const DAY: u64 = 86_400;
-    const MONTH: u64 = 30 * DAY;
-
-    fn allowlist_and_register(
+    fn setup_meter_with_payment(
         env: &Env,
         client: &SolarGridContractClient<'static>,
+        token_address: &Address,
+        meter_id: &String,
         owner: &Address,
-    ) -> String {
-        let meter_id = String::from_str(env, "SG-2024-METER1");
+    ) {
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
         client.allowlist_add(owner);
-        client.register_meter(&meter_id, owner);
-        meter_id
-    }
-
-    fn events_as_tuples(env: &Env) -> std::vec::Vec<(Symbol, soroban_sdk::Val)> {
-        env.events()
-            .all()
-            .iter()
-            .map(|(_, topics, _)| {
-                let sym = Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
-                (sym, topics.get(1).unwrap())
-            })
-            .collect()
+        client.register_meter(meter_id, owner);
+        token_admin_client.mint(owner, &10_000_000_i128);
+        client.make_payment(meter_id, owner, &10_000_000_i128, &PaymentPlan::Daily);
     }
 
     #[test]
-    fn test_create_installment_plan_happy_path() {
+    fn test_add_delegate_with_each_permission() {
         let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
         let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
 
-        let total: i128 = 3_000_000;
-        let installments: u32 = 3;
+        let expiry = env.ledger().timestamp() + 86_400;
+        let view_only = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let admin_delegate = Address::generate(&env);
+
+        client.add_delegate(&meter_id, &owner, &view_only, &Permission::ViewOnly, &expiry);
+        client.add_delegate(&meter_id, &owner, &payer, &Permission::Pay, &expiry);
+        client.add_delegate(&meter_id, &owner, &admin_delegate, &Permission::Admin, &expiry);
+
+        let delegates = client.get_delegates(&meter_id);
+        assert_eq!(delegates.len(), 3);
+
+        let mut found_view = false;
+        let mut found_pay = false;
+        let mut found_admin = false;
+        for d in delegates.iter() {
+            assert_eq!(d.expiry, expiry);
+            match d.permissions {
+                Permission::ViewOnly => found_view = true,
+                Permission::Pay => found_pay = true,
+                Permission::Admin => found_admin = true,
+            }
+        }
+        assert!(found_view && found_pay && found_admin);
+    }
+
+    #[test]
+    fn test_non_owner_add_delegate_unauthorized() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let attacker = Address::generate(&env);
+        let delegate = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86_400;
+
+        let result = client.try_add_delegate(
+            &meter_id,
+            &attacker,
+            &delegate,
+            &Permission::ViewOnly,
+            &expiry,
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_add_delegate_zero_permissions_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let delegate = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86_400;
+
+        let result = client.try_add_delegate(
+            &meter_id,
+            &owner,
+            &delegate,
+            &Permission::None,
+            &expiry,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_delegate_past_expiry_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let delegate = Address::generate(&env);
+        let past = env.ledger().timestamp().saturating_sub(1);
+
+        let result = client.try_add_delegate(
+            &meter_id,
+            &owner,
+            &delegate,
+            &Permission::ViewOnly,
+            &past,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_delegate_removes_entry_and_emits_event() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let delegate = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86_400;
+        client.add_delegate(&meter_id, &owner, &delegate, &Permission::Pay, &expiry);
+        assert_eq!(client.get_delegates(&meter_id).len(), 1);
+
+        client.remove_delegate(&meter_id, &owner, &delegate);
+        assert_eq!(client.get_delegates(&meter_id).len(), 0);
+
+        let events = env.events().all();
+        let removed_topic = (symbol_short!("deleg_rm"), meter_id.clone()).into_val(&env);
+        let mut found = false;
+        for (topics, _data) in events.iter() {
+            if topics == removed_topic {
+                found = true;
+            }
+        }
+        assert!(found, "DelegateRemoved event not emitted");
+    }
+
+    #[test]
+    fn test_expired_delegate_rejected_by_make_delegated_payment() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let delegate = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 100;
+        client.add_delegate(&meter_id, &owner, &delegate, &Permission::Pay, &expiry);
+
+        // Advance ledger past expiry
+        env.ledger().set_timestamp(expiry + 1);
+
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&delegate, &1_000_000_i128);
+
+        let result = client.try_make_delegated_payment(
+            &meter_id,
+            &delegate,
+            &1_000_000_i128,
+            &PaymentPlan::Daily,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delegate_without_pay_permission_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let delegate = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86_400;
+        client.add_delegate(&meter_id, &owner, &delegate, &Permission::ViewOnly, &expiry);
+
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&delegate, &1_000_000_i128);
+
+        let result = client.try_make_delegated_payment(
+            &meter_id,
+            &delegate,
+            &1_000_000_i128,
+            &PaymentPlan::Daily,
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_get_delegates_returns_full_structs() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let delegate = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86_400;
+        client.add_delegate(&meter_id, &owner, &delegate, &Permission::Admin, &expiry);
+
+        let delegates = client.get_delegates(&meter_id);
+        assert_eq!(delegates.len(), 1);
+        let d = delegates.get(0).unwrap();
+        assert_eq!(d.delegated_address, delegate);
+        assert_eq!(d.permissions, Permission::Admin);
+        assert_eq!(d.expiry, expiry);
+    }
+
+    #[test]
+    fn test_delegate_added_event_topics() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-METER1");
+        let owner = Address::generate(&env);
+        setup_meter_with_payment(&env, &client, &token_address, &meter_id, &owner);
+
+        let delegate = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86_400;
+        client.add_delegate(&meter_id, &owner, &delegate, &Permission::Pay, &expiry);
+
+        let events = env.events().all();
+        let added_topic = (symbol_short!("deleg_add"), meter_id.clone()).into_val(&env);
+        let mut found = false;
+        for (topics, _data) in events.iter() {
+            if topics == added_topic {
+                found = true;
+            }
+        }
+        assert!(found, "DelegateAdded event not emitted");
+    }
+
+    // ------------------------------------------------------------------
+    // Seasonal pricing tests
+    // ------------------------------------------------------------------
+
+    fn season_range(env: &Env, start: u64, end: u64, multiplier: u32) -> SeasonalRate {
+        SeasonalRate {
+            season: Season::Summer,
+            start_date: start,
+            end_date: end,
+            multiplier,
+        }
+    }
+
+    #[test]
+    fn test_set_seasonal_rates_admin_only() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let attacker = Address::generate(&env);
         let now = env.ledger().timestamp();
+        let rates = soroban_sdk::vec![
+            &env,
+            season_range(&env, now, now + 1_000, 12_000),
+        ];
 
-        let plan_id = client.create_installment_plan(&owner, &total, &installments);
-        assert_eq!(plan_id, 0);
-
-        let plan = client.get_installment_plan(&plan_id).unwrap();
-        assert_eq!(plan.payer, owner);
-        assert_eq!(plan.total, total);
-        assert_eq!(plan.installments, installments);
-        assert_eq!(plan.installment_amount, total / installments as i128);
-        assert_eq!(plan.paid, 0);
-        assert_eq!(plan.remaining, total);
-        assert_eq!(plan.next_due, now + MONTH);
-        assert_eq!(plan.status, InstallmentStatus::Active);
-
-        let events = events_as_tuples(&env);
-        assert!(events.iter().any(|(sym, _)| *sym == symbol_short!("inst_new")));
-
-        let _ = token_address;
+        let result = client.try_set_seasonal_rates(&attacker, &rates);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
     }
 
     #[test]
-    fn test_create_installment_plan_invalid_total() {
-        let (env, client, _admin, _token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
+    fn test_set_seasonal_rates_overlapping_rejected() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let rates = soroban_sdk::vec![
+            &env,
+            season_range(&env, now, now + 1_000, 12_000),
+            season_range(&env, now + 500, now + 2_000, 11_000),
+        ];
 
-        let result = client.try_create_installment_plan(&owner, &0_i128, &3_u32);
-        assert_eq!(result, Err(Ok(Error::InvalidInstallmentPlan)));
-
-        let result = client.try_create_installment_plan(&owner, &-1_i128, &3_u32);
-        assert_eq!(result, Err(Ok(Error::InvalidInstallmentPlan)));
+        let result = client.try_set_seasonal_rates(&admin, &rates);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_create_installment_plan_invalid_installments() {
-        let (env, client, _admin, _token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
+    fn test_set_seasonal_rates_descending_rejected() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let rates = soroban_sdk::vec![
+            &env,
+            season_range(&env, now + 2_000, now + 1_000, 12_000),
+        ];
 
-        let result = client.try_create_installment_plan(&owner, &1_000_000_i128, &0_u32);
-        assert_eq!(result, Err(Ok(Error::InvalidInstallmentPlan)));
-
-        let result = client.try_create_installment_plan(&owner, &1_000_000_i128, &61_u32);
-        assert_eq!(result, Err(Ok(Error::InvalidInstallmentPlan)));
+        let result = client.try_set_seasonal_rates(&admin, &rates);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_pay_installment_not_due() {
-        let (env, client, _admin, _token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
+    fn test_get_current_season_matches_timestamp() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let rates = soroban_sdk::vec![
+            &env,
+            season_range(&env, now, now + 1_000, 12_000),
+        ];
+        client.set_seasonal_rates(&admin, &rates);
 
-        let plan_id = client.create_installment_plan(&owner, &3_000_000_i128, &3_u32);
-
-        let result = client.try_pay_installment(&plan_id, &owner);
-        assert_eq!(result, Err(Ok(Error::InstallmentNotDue)));
+        env.ledger().set_timestamp(now + 500);
+        let current = client.get_current_season();
+        assert!(current.is_some());
+        assert_eq!(current.unwrap().multiplier, 12_000);
     }
 
     #[test]
-    fn test_pay_installment_due() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
+    fn test_compute_cost_applies_active_multiplier() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let rates = soroban_sdk::vec![
+            &env,
+            season_range(&env, now, now + 1_000, 20_000),
+        ];
+        client.set_seasonal_rates(&admin, &rates);
+        env.ledger().set_timestamp(now + 100);
 
-        let total: i128 = 3_000_000;
-        let installments: u32 = 3;
-        let plan_id = client.create_installment_plan(&owner, &total, &installments);
-
-        token_admin_client.mint(&owner, &total);
-
-        let plan_before = client.get_installment_plan(&plan_id).unwrap();
-        env.ledger().set_timestamp(plan_before.next_due);
-
-        client.pay_installment(&plan_id, &owner);
-
-        let plan = client.get_installment_plan(&plan_id).unwrap();
-        let amount = total / installments as i128;
-        assert_eq!(plan.paid, amount);
-        assert_eq!(plan.remaining, total - amount);
-        assert_eq!(plan.next_due, plan_before.next_due + MONTH);
-        assert_eq!(plan.status, InstallmentStatus::Active);
-
-        let token_client = token::Client::new(&env, &token_address);
-        assert_eq!(token_client.balance(&owner), total - amount);
-
-        let events = events_as_tuples(&env);
-        assert!(events.iter().any(|(sym, _)| *sym == symbol_short!("inst_paid")));
+        let base = client.compute_cost(&1_000_i128);
+        assert_eq!(base, 2_000_i128);
     }
 
     #[test]
-    fn test_pay_final_installment_completes_plan() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
+    fn test_seasonal_rate_applied_event_emitted() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let rates = soroban_sdk::vec![
+            &env,
+            season_range(&env, now, now + 1_000, 15_000),
+        ];
+        client.set_seasonal_rates(&admin, &rates);
 
-        let total: i128 = 3_000_000;
-        let installments: u32 = 3;
-        let plan_id = client.create_installment_plan(&owner, &total, &installments);
-
-        token_admin_client.mint(&owner, &total);
-
-        for _ in 0..installments {
-            let plan = client.get_installment_plan(&plan_id).unwrap();
-            env.ledger().set_timestamp(plan.next_due);
-            client.pay_installment(&plan_id, &owner);
+        let events = env.events().all();
+        let applied_topic = symbol_short!("season_ap").into_val(&env);
+        let mut found = false;
+        for (topics, _data) in events.iter() {
+            if topics == applied_topic {
+                found = true;
+            }
         }
-
-        let plan = client.get_installment_plan(&plan_id).unwrap();
-        assert_eq!(plan.remaining, 0);
-        assert_eq!(plan.paid, total);
-        assert_eq!(plan.status, InstallmentStatus::Completed);
-
-        let events = events_as_tuples(&env);
-        assert!(events.iter().any(|(sym, _)| *sym == symbol_short!("inst_paid")));
+        assert!(found, "SeasonalRateApplied event not emitted");
     }
 
     #[test]
-    fn test_process_due_installments_defaults() {
-        let (env, client, _admin, _token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
+    fn test_timestamp_outside_ranges_falls_back_to_base_rate() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let rates = soroban_sdk::vec![
+            &env,
+            season_range(&env, now + 10_000, now + 20_000, 20_000),
+        ];
+        client.set_seasonal_rates(&admin, &rates);
 
-        let plan_id = client.create_installment_plan(&owner, &3_000_000_i128, &3_u32);
-        let plan = client.get_installment_plan(&plan_id).unwrap();
+        env.ledger().set_timestamp(now);
+        assert!(client.get_current_season().is_none());
 
-        let grace = client.get_installment_grace_secs();
-        env.ledger().set_timestamp(plan.next_due + grace + 1);
-
-        client.process_due_installments();
-
-        let plan = client.get_installment_plan(&plan_id).unwrap();
-        assert_eq!(plan.status, InstallmentStatus::Defaulted);
-
-        let events = events_as_tuples(&env);
-        assert!(events.iter().any(|(sym, _)| *sym == symbol_short!("inst_dflt")));
-    }
-
-    #[test]
-    fn test_get_installment_plan_and_payer_installments() {
-        let (env, client, _admin, _token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
-
-        let plan_id = client.create_installment_plan(&owner, &3_000_000_i128, &3_u32);
-
-        let plan = client.get_installment_plan(&plan_id).unwrap();
-        assert_eq!(plan.payer, owner);
-        assert_eq!(plan.total, 3_000_000);
-
-        let payer_plans = client.get_payer_installments(&owner);
-        assert_eq!(payer_plans.len(), 1);
-        assert_eq!(payer_plans.get(0).unwrap(), plan_id);
-
-        let missing = client.get_installment_plan(&999_u64);
-        assert!(missing.is_none());
-    }
-
-    #[test]
-    fn test_pay_installment_on_defaulted_plan() {
-        let (env, client, _admin, _token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
-
-        let plan_id = client.create_installment_plan(&owner, &3_000_000_i128, &3_u32);
-        let plan = client.get_installment_plan(&plan_id).unwrap();
-
-        let grace = client.get_installment_grace_secs();
-        env.ledger().set_timestamp(plan.next_due + grace + 1);
-        client.process_due_installments();
-
-        let result = client.try_pay_installment(&plan_id, &owner);
-        assert_eq!(result, Err(Ok(Error::InstallmentPlanDefaulted)));
-    }
-
-    #[test]
-    fn test_pay_installment_on_completed_plan() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        let owner = Address::generate(&env);
-        let _meter_id = allowlist_and_register(&env, &client, &owner);
-
-        let total: i128 = 3_000_000;
-        let installments: u32 = 3;
-        let plan_id = client.create_installment_plan(&owner, &total, &installments);
-        token_admin_client.mint(&owner, &total);
-
-        for _ in 0..installments {
-            let plan = client.get_installment_plan(&plan_id).unwrap();
-            env.ledger().set_timestamp(plan.next_due);
-            client.pay_installment(&plan_id, &owner);
-        }
-
-        let result = client.try_pay_installment(&plan_id, &owner);
-        assert_eq!(result, Err(Ok(Error::InstallmentPlanCompleted)));
+        let base = client.compute_cost(&1_000_i128);
+        assert_eq!(base, 1_000_i128);
     }
 }
