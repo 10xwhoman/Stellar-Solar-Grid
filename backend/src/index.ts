@@ -189,6 +189,10 @@ app.use("/api/meters/map", meterMapRouter);
 app.use("/api/keys", writeLimiter, apiKeysRouter);
 app.use("/api/meters", meterHealthRouter);
 app.use("/api/meters", predictionRouter);
+// #982: weather-aware forecast endpoint (GET /api/meters/:meterId/forecast)
+app.use("/api/meters", createWeatherForecastRouter());
+// #983: appliance breakdown endpoint (GET /api/meters/:meterId/appliances)
+app.use("/api/meters", createApplianceRouter());
 startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
@@ -230,6 +234,10 @@ startPriceSimulation();
 startBillingScheduler();
 startCompetitionScheduler();
 startEnergyForecastRetraining();
+// #982: retrain the weather-aware forecasting model alongside the consumption model
+startWeatherForecastRetraining();
+// #983: retrain the appliance disaggregation model
+startApplianceDisaggregationRetraining();
 startSmartHomeScheduler();
 // #877: dynamic pricing
 app.use("/api/pricing", pricingRouter);
@@ -327,6 +335,12 @@ const httpServer = app.listen(PORT, () => {
     startIoTBridge();
   } catch (err) {
     logger.error("Failed to start IoT bridge", { err });
+  }
+  // #993: listen for diagnostic results reported by meters over MQTT
+  try {
+    startDiagnosticResultListener();
+  } catch (err) {
+    logger.error("Failed to start diagnostic result listener", { err });
   }
 });
 attachTradingWebSocket(httpServer);

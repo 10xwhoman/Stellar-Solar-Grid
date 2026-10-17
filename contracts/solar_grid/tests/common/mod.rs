@@ -74,6 +74,29 @@ impl Fixture {
         (id, owner)
     }
 
+    /// Create a solar farm and return its id along with a set of allowlisted,
+    /// funded shareholder addresses so suites can exercise `buy_solar_share`
+    /// and `distribute_generation_credits`.
+    pub fn solar_farm(
+        &self,
+        name: &str,
+        capacity_watts: u64,
+        share_price: i128,
+        shareholders: u32,
+    ) -> (String, soroban_sdk::Vec<Address>) {
+        let farm_id = self.id(name);
+        self.client.create_solar_farm(&farm_id, &capacity_watts, &share_price);
+
+        let mut holders = soroban_sdk::Vec::new(&self.env);
+        for _ in 0..shareholders {
+            let holder = Address::generate(&self.env);
+            self.client.allowlist_add(&holder);
+            self.mint(&holder, share_price);
+            holders.push_back(holder);
+        }
+        (farm_id, holders)
+    }
+
     pub fn set_time(&self, timestamp: u64) {
         use soroban_sdk::testutils::Ledger;
         self.env.ledger().with_mut(|li| li.timestamp = timestamp);

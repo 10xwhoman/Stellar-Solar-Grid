@@ -375,6 +375,112 @@ Events (`solar`, …): `stk_cfg`, `stk_fund`, `staked`, `unstk_req`, `unstaked`,
 New errors: `StakingNotConfigured` (38), `InsufficientStake` (39),
 `NoPendingUnstake` (40), `CooldownNotElapsed` (41).
 
+## Community Solar Farms (#984)
+
+Users without rooftop space can buy shares in a community solar farm and receive
+credits proportional to the farm's generation. Implemented in
+`solar_grid/src/solar_farm.rs`.
+
+### `SolarFarm` struct
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `u64` | Sequential farm id (0-based) |
+| `name` | `String` | Human-readable farm name |
+| `capacity_watts` | `u64` | Installed capacity in watts |
+| `share_price` | `i128` | Price per share in the payment token |
+| `total_shares` | `u64` | Total shares issued so far |
+| `shareholders` | `Vec<(Address, u64)>` | `(investor, shares)` pairs, in purchase order |
+| `generation_data` | `Vec<GenerationRecord>` | Per-period generation readings |
+| `total_generation` | `u64` | Cumulative generation in Wh across all periods |
+| `active` | `bool` | Whether shares can still be purchased |
+
+`GenerationRecord` holds `period_start`, `period_end`, and `energy_wh`.
+
+### `buy_solar_share(buyer, farm_id, shares)`
+
+Requires authorization from `buyer`. Transfers `shares * share_price` of the
+configured payment token from `buyer` to the contract, then credits `shares` to
+the buyer's position in `shareholders` (creating the entry on first purchase).
+Rejects `shares == 0`, unknown or inactive farms, and insufficient token balance
+or allowance. Emits `SharePurchased`.
+
+### `distribute_generation_credits(farm_id, energy_wh, period_start, period_end)`
+
+Admin-only (requires the administrator's authorization). Appends a
+`GenerationRecord` to `generation_data`, adds `energy_wh` to `total_generation`,
+and allocates credits **proportionally** to each shareholder:
+
+```
+credit_i = energy_wh * shares_i / total_shares
+```
+
+Integer division truncates, so the sum of allocated credits may be less than
+`energy_wh`; the remainder is retained by the contract. Shareholders with zero
+shares receive nothing. Rejects unknown farms, empty shareholder sets, and
+periods that end before they start. Emits `CreditsDistributed`.
+
+### Views
+
+`get_solar_farm(farm_id)`, `get_solar_farms(offset, limit)` (limit capped at
+100), `get_farm_shareholders(farm_id)`, `get_farm_generation(farm_id)`, and
+`get_shareholder_credits(farm_id, investor)`.
+
+### Events
+
+#### SharePurchased
+- **Topic 0:** `shr_buy` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `farm_id` (u64)
+- **Data:** `(buyer: Address, shares: u64, amount_paid: i128)`
+
+Emitted by `buy_solar_share` for every successful purchase.
+
+#### CreditsDistributed
+- **Topic 0:** `crd_dist` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `farm_id` (u64)
+- **Data:** `(energy_wh: u64, total_generation: u64, period_start: u64, period_end: u64)`
+
+Emitted by `distribute_generation_credits` once per distribution.
+
+### New errors
+
+| Variant | Code | Raised when |
+|---|---|---|
+| `SolarFarmNotFound` | 60 | Farm id does not exist |
+| `SolarFarmInactive` | 61 | Farm is not accepting purchases |
+| `InvalidShareAmount` | 62 | `shares == 0` |
+| `NoShareholders` | 63 | Distribution attempted with no shareholders |
+| `InvalidGenerationPeriod` | 64 | `period_end < period_start` |
+
+### Usage example
+
+```rust
+// Admin registers a farm and funds it with a payment token.
+let farm_id = client.create_solar_farm(&admin, &name, &capacity_watts, &share_price);
+
+// A user without rooftop space buys 10 shares.
+client.buy_solar_share(&buyer, &farm_id, &10);
+
+// Admin reports a generation period; credits are split pro-rata.
+client.distribute_generation_credits(&admin, &farm_id, &energy_wh, &start, &end);
+
+// The buyer checks their accrued credits.
+let credits = client.get_shareholder_credits(&farm_id, &buyer);
+```
+
+### Tests
+
+Share management is covered by `test_create_solar_farm`,
+`test_buy_solar_share_updates_shareholders`,
+`test_buy_solar_share_rejects_zero_shares`,
+`test_buy_solar_share_rejects_inactive_farm`,
+`test_distribute_generation_credits_proportional`,
+`test_distribute_generation_credits_tracks_total_generation`,
+`test_distribute_generation_credits_rejects_no_shareholders`, and
+`test_buy_solar_share_emits_event` (issue #984).
+
 ## Energy Export Certificates (#871)
 
 Non-fungible certificates attesting that a meter exported renewable energy to
