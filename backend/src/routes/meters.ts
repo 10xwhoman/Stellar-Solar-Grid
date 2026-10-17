@@ -32,10 +32,7 @@ import {
   searchMetersByLocationIndex,
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
-import {
-  getGridExportHistory,
-  getGridExportTotals,
-} from "../lib/gridExports.js";
+import { getBatteryStats } from "../lib/batteryStats.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -287,63 +284,116 @@ export function createMeterRouter(stellar: StellarService) {
   );
 
   /**
-   * GET /api/meters/:meterId/exports — paginated grid export history with
-   * import/export totals (Issue #990).
+   * GET /api/meters/:meterId/power-quality — real-time power quality monitoring (Issue #988).
    *
-   * Registered BEFORE the generic /:id route so "exports" is never matched
-   * as a meter ID parameter.
+   * Returns the latest voltage/frequency/THD reading, any detected quality
+   * issues (sags, swells, harmonics), historical trending, and the thresholds
+   * used to classify readings. Registered BEFORE the generic /:id route so it
+   * is not shadowed.
+   *
+   * Query params:
+   *   days     — history window in days (default 7, max 90)
+   *   page     — history page (default 1)
+   *   pageSize — history page size (default 100, max 500)
    */
   meterRouter.get(
-    "/:meterId/exports",
+    "/:meterId/power-quality",
     asyncHandler(async (req, res) => {
       const meterId = req.params.meterId;
 
-      const rawPage = Number(req.query.page ?? 1);
-      const rawPageSize = Number(req.query.pageSize ?? 20);
-
-      if (!Number.isInteger(rawPage) || rawPage < 1) {
-        return res.status(400).json({ error: "page must be a positive integer", code: "VALIDATION_ERROR" });
-      }
-      if (!Number.isInteger(rawPageSize) || rawPageSize < 1 || rawPageSize > 100) {
-        return res.status(400).json({ error: "pageSize must be between 1 and 100", code: "VALIDATION_ERROR" });
-      }
-
       // Validate the meter exists on-chain.
-      let meter: any;
       try {
         const result = await stellar.query("get_meter", [
           StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
         ]);
-        meter = StellarSdk.scValToNative(result);
+        const meter = StellarSdk.scValToNative(result) as any;
+        if (!meter) {
+          return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+        }
       } catch {
-        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
-      }
-      if (!meter) {
-        return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
       }
 
-      const history = getGridExportHistory(meterId, rawPage, rawPageSize);
-      const totals = getGridExportTotals(meterId);
+      const days = Math.min(
+        90,
+        Math.max(1, parseInt((req.query.days as string) ?? "7", 10) || 7),
+      );
+      const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10) || 1);
+      const pageSize = Math.min(
+        500,
+        Math.max(1, parseInt((req.query.pageSize as string) ?? "100", 10) || 100),
+      );
 
-      // Prefer on-chain totals when the contract exposes them.
-      let onChainTotals: any = null;
-      try {
-        const result = await stellar.query("get_export_totals", [
-          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-        ]);
-        onChainTotals = StellarSdk.scValToNative(result);
-      } catch {
-        onChainTotals = null;
-      }
+      const summary = getPowerQualitySummary(meterId);
+      const history = getPowerQualityHistory(meterId, days);
+
+      const start = (page - 1) * pageSize;
+      const paginatedHistory = history.slice(start, start + pageSize);
 
       return res.json({
-        meter_id: meterId,
-        exports: history.exports,
-        pagination: history.pagination,
-        totals: {
-          ...totals,
-          on_chain: onChainTotals,
+        meterId,
+        current: summary.current,
+        issues: summary.issues,
+        history: paginatedHistory,
+        thresholds: POWER_QUALITY_THRESHOLDS,
+        pagination: {
+          page,
+          pageSize,
+          total: history.length,
+          pages: Math.ceil(history.length / pageSize),
         },
+      });
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/power-quality — IoT sensor ingestion for power quality
+   * readings (Issue #988). Accepts voltage, frequency, and THD measurements and
+   * persists them for analytics and alerting.
+   */
+  meterRouter.post(
+    "/:id/power-quality",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      const { voltage, frequency, thd, timestamp } = req.body ?? {};
+
+      const voltageNum = Number(voltage);
+      const frequencyNum = Number(frequency);
+      const thdNum = Number(thd);
+
+      if (!Number.isFinite(voltageNum) || voltageNum <= 0) {
+        return res.status(400).json({ error: "voltage must be a positive number", code: "VALIDATION_ERROR" });
+      }
+      if (!Number.isFinite(frequencyNum) || frequencyNum <= 0) {
+        return res.status(400).json({ error: "frequency must be a positive number", code: "VALIDATION_ERROR" });
+      }
+      if (!Number.isFinite(thdNum) || thdNum < 0) {
+        return res.status(400).json({ error: "thd must be a non-negative number", code: "VALIDATION_ERROR" });
+      }
+
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const reading = recordPowerQualityReading(meterId, {
+        voltage: voltageNum,
+        frequency: frequencyNum,
+        thd: thdNum,
+        timestamp: timestamp ?? new Date().toISOString(),
+      });
+
+      const summary = getPowerQualitySummary(meterId);
+
+      return res.status(201).json({
+        meterId,
+        reading,
+        issues: summary.issues,
+        thresholds: POWER_QUALITY_THRESHOLDS,
       });
     }),
   );
@@ -570,6 +620,29 @@ export function createMeterRouter(stellar: StellarService) {
         indexMeterLocation(meterId, loc, metadata);
       }
       res.json({ success: true, meter_id: meterId, location: loc, metadata });
+    }),
+  );
+
+  /**
+   * GET /api/meters/:meterId/battery — battery telemetry stats for a meter.
+   *
+   * Returns voltage, current, state of charge, health percentage, cycle
+   * count and the predicted replacement date derived from the recorded
+   * battery telemetry. Responds 404 when no battery telemetry has been
+   * recorded for the meter.
+   */
+  meterRouter.get(
+    "/:meterId/battery",
+    asyncHandler(async (req, res) => {
+      const { meterId } = req.params;
+      const stats = getBatteryStats(meterId);
+      if (!stats) {
+        return res.status(404).json({
+          error: "No battery telemetry recorded for this meter",
+          code: "BATTERY_NOT_FOUND",
+        });
+      }
+      return res.json(stats);
     }),
   );
 

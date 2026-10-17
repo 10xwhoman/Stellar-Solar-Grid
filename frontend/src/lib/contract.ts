@@ -261,3 +261,89 @@ export function cancelUnstake(staker: string): Promise<string> {
 export function claimStakingRewards(staker: string): Promise<string> {
   return contractInvoke(staker, "claim_staking_rewards", [addrVal(staker)]);
 }
+
+// ── Family/household account delegation (#981) ──────────────────────────────
+
+/** Permission level granted to a delegate. */
+export type DelegatePermission = "view" | "pay" | "admin";
+
+export interface Delegate {
+  delegated_address: string;
+  permissions: DelegatePermission;
+  expiry: bigint;
+}
+
+/** List the delegates granted access to `meterId`. */
+export async function fetchDelegates(meterId: string): Promise<Delegate[]> {
+  const retval = await client.query("get_delegates", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as Delegate[];
+}
+
+/** Owner-only: grant `delegate` access to `meterId` until `expiry`. */
+export function addDelegate(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+  permissions: DelegatePermission,
+  expiry: bigint,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "add_delegate", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
+    StellarSdk.nativeToScVal(permissions, { type: "symbol" }),
+    StellarSdk.nativeToScVal(expiry, { type: "u64" }),
+  ]);
+}
+
+/** Owner-only: revoke `delegate`'s access to `meterId`. */
+export function removeDelegate(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "remove_delegate", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
+  ]);
+}
+
+/** Make a payment on `meterId` using a delegate's pay permission. */
+export function makeDelegatedPayment(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+  amountStroops: bigint,
+  plan: string,
+  memo: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "make_delegated_payment", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
+    i128Val(amountStroops),
+    StellarSdk.nativeToScVal(plan, { type: "symbol" }),
+    StellarSdk.nativeToScVal(memo, { type: "symbol" }),
+  ]);
+}
+
+// ── Seasonal pricing plans (#992) ───────────────────────────────────────────
+
+export interface SeasonalRate {
+  season: string;
+  start_date: bigint;
+  end_date: bigint;
+  multiplier: bigint;
+}
+
+/** Fetch all configured seasonal rates. */
+export async function fetchSeasonalRates(): Promise<SeasonalRate[]> {
+  const retval = await client.query("get_seasonal_rates", []);
+  return StellarSdk.scValToNative(retval) as SeasonalRate[];
+}
+
+/** Fetch the season currently in effect (and its rate). */
+export async function fetchCurrentSeason(): Promise<SeasonalRate> {
+  const retval = await client.query("get_current_season", []);
+  return StellarSdk.scValToNative(retval) as SeasonalRate;
+}

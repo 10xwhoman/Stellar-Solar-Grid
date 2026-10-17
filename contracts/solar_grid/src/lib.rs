@@ -8,14 +8,18 @@ use soroban_sdk::{
 };
 
 mod certificates;
+mod insurance;
 mod multi_asset;
+mod leases;
 mod recs;
 mod staking;
 mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
+pub use insurance::{ClaimStatus, InsuranceClaim, InsurancePolicy};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
+pub use leases::{LeaseAgreement, LeaseStatus};
 pub use recs::{
     RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
     RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
@@ -128,8 +132,8 @@ pub enum ContractError {
     InvalidRecQuantity = 71,
     /// A registry or attestation reference is required.
     ComplianceRefMissing = 72,
-    /// The admin-configurable grid export rate has not been set (Issue #990).
-    ExportRateNotSet = 73,
+    /// No lease agreement exists with the supplied id.
+    LeaseNotFound = 73,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -178,6 +182,12 @@ const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
 const ADMIN_TRANSFER_TTL: u64 = 7 * SECONDS_PER_DAY;
+/// Sequential counter for installment plans (#987).
+const PLAN_COUNT: Symbol = symbol_short!("PLAN_CNT");
+/// Billing interval between installments: 30 days (#987).
+const INSTALLMENT_INTERVAL_SECS: u64 = 30 * SECONDS_PER_DAY;
+/// Maximum number of installments allowed per plan (#987).
+const MAX_INSTALLMENTS: u32 = 60;
 /// Max number of metadata key-value pairs per meter (Issue #691).
 const MAX_METADATA_PAIRS: u32 = 10;
 /// Max characters per metadata value (Issue #691).
@@ -556,6 +566,34 @@ fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubscriptionTier {
+    pub id: u32,
+    pub name: String,
+    pub price: i128,
+    pub included_kwh: u64,
+    pub rollover_limit: u64,
+}
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnergySubscription {
+    pub owner: Address,
+    pub tier_id: u32,
+    pub remaining_kwh: u64,
+    pub rollover_kwh: u64,
+    pub renewed_at: u64,
+    pub active: bool,
+}
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnergyGift {
+    pub sender: Address,
+    pub recipient: Address,
+    pub amount: i128,
+    pub message: Option<String>,
+    pub sent_at: u64,
+}
+#[contracttype]
 pub enum DataKey {
     Meter(String),
     OwnerMeters(Address),
@@ -566,8 +604,11 @@ pub enum DataKey {
     PayerPaid(String, Address),
     /// Cumulative amount already refunded to `payer` for `meter_id`.
     PayerRefunded(String, Address),
-    /// List of delegate addresses authorized to make payments for a meter.
+    /// List of delegates authorized to act on a meter, with per-delegate
+    /// permissions and expiry (Issue #981).
     MeterDelegates(String),
+    /// Configured seasonal pricing rates (Issue #992).
+    SeasonalRates,
     /// Storage key for a multisig admin proposal.
     AdminProposal(u32),
     AdminTransferProposal,
@@ -593,10 +634,10 @@ pub enum DataKey {
     ReferralCredit(Address),
     /// Referral statistics for a referrer (Issue #831).
     ReferralStats(Address),
-    /// Grid export history for a meter (Issue #990).
-    GridExportHistory(String),
-    /// Cumulative grid export credit paid to a meter (Issue #990).
-    GridExportCredit(String),
+    SubscriptionTier(u32),
+    SubscriptionTierCount,
+    Subscription(Address),
+    GiftHistory(Address),
 }
 
 #[contracttype]
@@ -617,15 +658,32 @@ pub struct GroupStats { pub meter_count: u32, pub active_count: u32, pub total_u
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferralStats { pub referred_count: u32, pub total_credits: i128 }
 
-/// A single grid export credited to a meter (Issue #990).
+/// Permission bitmask values for a [`Delegate`] (Issue #981).
+/// Combine with bitwise OR: `VIEW | PAY` grants both.
+pub const DELEGATE_PERM_VIEW: u32 = 1;
+pub const DELEGATE_PERM_PAY: u32 = 2;
+pub const DELEGATE_PERM_ADMIN: u32 = 4;
+
+/// A delegated account authorized to act on a meter on the owner's behalf
+/// (Issue #981). `permissions` is a bitmask of the `DELEGATE_PERM_*` bits and
+/// `expiry` is a Unix ledger timestamp (0 = never expires).
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
-pub struct GridExport {
-    pub meter_id: String,
-    pub kwh: u64,
-    pub credit: i128,
-    pub rate: i128,
-    pub timestamp: u64,
+pub struct Delegate {
+    pub delegated_address: Address,
+    pub permissions: u32,
+    pub expiry: u64,
+}
+
+/// A seasonal pricing band (Issue #992). `multiplier_bps` is in basis points
+/// where 10_000 = 1.0x (no adjustment).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeasonalRate {
+    pub season: Symbol,
+    pub start_date: u64,
+    pub end_date: u64,
+    pub multiplier_bps: u32,
 }
 
 #[contracttype]
@@ -2162,8 +2220,13 @@ impl SolarGridContract {
 
     // ── Payment Delegation ────────────────────────────────────────────────────
 
-    /// Add a delegate who can make payments on behalf of the meter owner.
-    /// Only the meter owner can add delegates.
+    /// Add (or replace) a delegate who can act on behalf of the meter owner
+    /// (Issue #981). Only the meter owner can add delegates.
+    ///
+    /// `permissions` is a bitmask of `DELEGATE_PERM_VIEW` (1),
+    /// `DELEGATE_PERM_PAY` (2) and `DELEGATE_PERM_ADMIN` (4). `expiry` is a
+    /// Unix ledger timestamp; 0 means the delegation never expires. An expiry
+    /// that is already in the past is rejected.
     ///
     /// # Use cases
     /// - Parents paying for adult children's energy
@@ -2171,11 +2234,13 @@ impl SolarGridContract {
     /// - Property managers paying for rental units
     /// - Energy provider incentive programs
     ///
-    /// Emits: `dlg_add { meter_id, delegate }`
+    /// Emits: `DelegateAdded { delegate, permissions, expiry }`
     pub fn add_delegate(
         env: Env,
         meter_id: String,
         delegate: Address,
+        permissions: u32,
+        expiry: u64,
     ) -> Result<(), ContractError> {
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
@@ -2183,29 +2248,46 @@ impl SolarGridContract {
         // Only meter owner can add delegates
         meter.owner.require_auth();
 
+        if permissions == 0 {
+            return Err(ContractError::InvalidDelegatePermissions);
+        }
+        if expiry != 0 && expiry <= env.ledger().timestamp() {
+            return Err(ContractError::InvalidDelegateExpiry);
+        }
+
         let delegates_key = DataKey::MeterDelegates(meter_id.clone());
-        let mut delegates: Vec<Address> = env
+        let delegates: Vec<Delegate> = env
             .storage()
             .persistent()
             .get(&delegates_key)
             .unwrap_or_else(|| vec![&env]);
 
-        // Check if delegate already exists
-        if !delegates.contains(&delegate) {
-            delegates.push_back(delegate.clone());
-            env.storage().persistent().set(&delegates_key, &delegates);
-
-            env.events()
-                .publish((EVT_NS, symbol_short!("dlg_add"), meter_id), delegate);
+        // Replace any existing entry for the same delegate, otherwise append.
+        let mut new_delegates: Vec<Delegate> = vec![&env];
+        for existing in delegates.iter() {
+            if existing.delegated_address != delegate {
+                new_delegates.push_back(existing);
+            }
         }
+        new_delegates.push_back(Delegate {
+            delegated_address: delegate.clone(),
+            permissions,
+            expiry,
+        });
+        env.storage().persistent().set(&delegates_key, &new_delegates);
+
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "DelegateAdded"), meter_id),
+            (delegate, permissions, expiry),
+        );
 
         Ok(())
     }
 
-    /// Remove a delegate's authorization to make payments.
-    /// Only the meter owner can remove delegates.
+    /// Remove a delegate's authorization. Only the meter owner can remove
+    /// delegates.
     ///
-    /// Emits: `dlg_rem { meter_id, delegate }`
+    /// Emits: `DelegateRemoved { delegate }`
     pub fn remove_delegate(
         env: Env,
         meter_id: String,
@@ -2218,18 +2300,18 @@ impl SolarGridContract {
         meter.owner.require_auth();
 
         let delegates_key = DataKey::MeterDelegates(meter_id.clone());
-        let delegates: Vec<Address> = env
+        let delegates: Vec<Delegate> = env
             .storage()
             .persistent()
             .get(&delegates_key)
             .unwrap_or_else(|| vec![&env]);
 
-        let mut new_delegates: Vec<Address> = vec![&env];
+        let mut new_delegates: Vec<Delegate> = vec![&env];
         let mut found = false;
 
-        for addr in delegates.iter() {
-            if addr != delegate {
-                new_delegates.push_back(addr);
+        for existing in delegates.iter() {
+            if existing.delegated_address != delegate {
+                new_delegates.push_back(existing);
             } else {
                 found = true;
             }
@@ -2240,20 +2322,52 @@ impl SolarGridContract {
                 .persistent()
                 .set(&delegates_key, &new_delegates);
 
-            env.events()
-                .publish((EVT_NS, symbol_short!("dlg_rem"), meter_id), delegate);
+            env.events().publish(
+                (EVT_NS, Symbol::new(&env, "DelegateRemoved"), meter_id),
+                delegate,
+            );
         }
 
         Ok(())
     }
 
-    /// Get all delegates authorized to make payments for a meter.
-    pub fn get_delegates(env: Env, meter_id: String) -> Vec<Address> {
+    /// Get all delegates authorized to act on a meter, with their permissions
+    /// and expiry (Issue #981).
+    pub fn get_delegates(env: Env, meter_id: String) -> Vec<Delegate> {
         let delegates_key = DataKey::MeterDelegates(meter_id);
         env.storage()
             .persistent()
             .get(&delegates_key)
             .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Load the delegate list for `meter_id`, find `caller`, and verify that
+    /// the delegation has not expired and includes `required_bit`. Returns
+    /// [`ContractError::Unauthorized`] otherwise (Issue #981).
+    fn require_delegate_permission(
+        env: &Env,
+        meter_id: &String,
+        caller: &Address,
+        required_bit: u32,
+    ) -> Result<(), ContractError> {
+        let delegates: Vec<Delegate> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MeterDelegates(meter_id.clone()))
+            .unwrap_or_else(|| vec![env]);
+        let now = env.ledger().timestamp();
+        for d in delegates.iter() {
+            if d.delegated_address == *caller {
+                if d.expiry != 0 && now >= d.expiry {
+                    return Err(ContractError::Unauthorized);
+                }
+                if d.permissions & required_bit == 0 {
+                    return Err(ContractError::Unauthorized);
+                }
+                return Ok(());
+            }
+        }
+        Err(ContractError::Unauthorized)
     }
 
     /// Make a payment on behalf of a meter owner as an authorized delegate.
@@ -2274,17 +2388,13 @@ impl SolarGridContract {
             return Err(ContractError::ContractPaused);
         }
 
-        // Verify delegate is authorized
-        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
-        let delegates: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&delegates_key)
-            .unwrap_or_else(|| vec![&env]);
-
-        if !delegates.contains(&delegate) {
-            return Err(ContractError::Unauthorized);
-        }
+        // Verify delegate is authorized with the PAY permission and has not expired.
+        Self::require_delegate_permission(
+            &env,
+            &meter_id,
+            &delegate,
+            DELEGATE_PERM_PAY,
+        )?;
 
         // Delegate must auth the payment
         delegate.require_auth();
@@ -2570,13 +2680,26 @@ impl SolarGridContract {
         env.storage().persistent().set(
             &DataKey::AdminProposal(id),
             &AdminProposal {
-                operation,
+                operation: operation.clone(),
                 approvals,
                 threshold,
                 expiry,
             },
         );
+        env.events().publish(
+            (symbol_short!("AdminPrpC"), id),
+            (String::from_str(&env, "AdminProposalCreated"), operation, threshold, expiry),
+        );
         Ok(id)
+    }
+
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        operation: AdminOperation,
+        expiry: u64,
+    ) -> Result<u32, ContractError> {
+        Self::propose_admin_operation(env, proposer, operation, expiry)
     }
 
     pub fn approve_admin_operation(
@@ -2612,6 +2735,14 @@ impl SolarGridContract {
         Ok(())
     }
 
+    pub fn approve_admin_action(
+        env: Env,
+        proposal_id: u32,
+        signer: Address,
+    ) -> Result<(), ContractError> {
+        Self::approve_admin_operation(env, proposal_id, signer)
+    }
+
     pub fn execute_admin_operation(env: Env, proposal_id: u32) -> Result<(), ContractError> {
         // Guards the EmergencyWithdraw arm's external token transfer below: without
         // this, a malicious token contract could reenter with the same proposal_id
@@ -2629,6 +2760,7 @@ impl SolarGridContract {
         if proposal.approvals.len() < proposal.threshold {
             return Err(ContractError::ProposalNotReady);
         }
+        let executed_op = proposal.operation.clone();
         match proposal.operation {
             AdminOperation::Pause => {
                 if Self::pause_is_active(&env) {
@@ -2679,7 +2811,15 @@ impl SolarGridContract {
             }
         }
         env.storage().persistent().remove(&key);
+        env.events().publish(
+            (symbol_short!("AdminPrpE"), proposal_id),
+            (String::from_str(&env, "AdminProposalExecuted"), executed_op),
+        );
         Ok(())
+    }
+
+    pub fn execute_admin_action(env: Env, proposal_id: u32) -> Result<(), ContractError> {
+        Self::execute_admin_operation(env, proposal_id)
     }
 
     fn is_multisig_admin(admins: &Vec<Address>, candidate: &Address) -> bool {
@@ -2766,163 +2906,54 @@ impl SolarGridContract {
             .unwrap_or(DEFAULT_UNIT_PRICE)
     }
 
-    /// Set the admin-configurable grid export credit rate, in stroops per kWh
-    /// (Issue #990). Must be strictly positive; a zero or negative rate would
-    /// let exports be recorded without any compensation.
+    /// Configure seasonal pricing bands (Issue #992). Admin-only.
     ///
-    /// Emits: `exp_rate { old, new }`.
-    pub fn set_export_rate(env: Env, rate: i128) -> Result<(), ContractError> {
-        Self::require_admin_action(&env, "set_export_rate", "contract")?;
-        if rate <= 0 {
-            return Err(ContractError::InvalidConfiguration);
+    /// Rates must be non-overlapping, in ascending order, and each
+    /// `multiplier_bps` must be greater than zero.
+    pub fn set_seasonal_rates(
+        env: Env,
+        rates: Vec<SeasonalRate>,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "set_seasonal_rates", "contract")?;
+        let mut previous_end: u64 = 0;
+        for rate in rates.iter() {
+            if rate.multiplier_bps == 0
+                || rate.start_date >= rate.end_date
+                || rate.start_date < previous_end
+            {
+                return Err(ContractError::InvalidSeasonalRate);
+            }
+            previous_end = rate.end_date;
         }
-        let old: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
-        env.storage().instance().set(&EXPORT_RATE, &rate);
+        env.storage().instance().set(&DataKey::SeasonalRates, &rates);
         env.events()
-            .publish((EVT_NS, symbol_short!("exp_rate")), (old, rate));
+            .publish((EVT_NS, symbol_short!("season_set")), rates.len());
         Ok(())
     }
 
-    /// Return the configured grid export credit rate (stroops per kWh), or 0
-    /// when the admin has not configured one yet (Issue #990).
-    pub fn get_export_rate(env: Env) -> i128 {
-        env.storage().instance().get(&EXPORT_RATE).unwrap_or(0)
+    /// Return the configured seasonal rates (Issue #992).
+    pub fn get_seasonal_rates(env: Env) -> Vec<SeasonalRate> {
+        env.storage()
+            .instance()
+            .get(&DataKey::SeasonalRates)
+            .unwrap_or_else(|| vec![&env])
     }
 
-    /// Record a grid export for a meter and credit its owner (Issue #990).
-    ///
-    /// `kwh` is the exported energy in milli-kWh. The credit is computed as
-    /// `kwh * export_rate` and added to the meter's prepaid balance, so the
-    /// owner can consume it later or withdraw it via the normal refund path.
-    ///
-    /// # Access control
-    /// The registered oracle (or the admin) must authorize the call.
-    ///
-    /// # Guards
-    /// - `kwh` must be > 0.
-    /// - The meter must exist.
-    /// - An export rate must have been configured via [`Self::set_export_rate`].
-    ///
-    /// SECURITY: Follows checks-effects-interactions ordering and holds the
-    /// reentrancy lock for the whole body.
-    ///
-    /// Emits: `GridExport` with topics `(EVT_NS, grid_exp, meter_id)` and data
-    /// `(kwh, credit, rate, timestamp)`.
-    pub fn record_grid_export(
-        env: Env,
-        meter_id: String,
-        kwh: u64,
-    ) -> Result<i128, ContractError> {
-        // ── CHECKS ──────────────────────────────────────────────────────────
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
-        if kwh == 0 {
-            return Err(ContractError::InvalidAmount);
-        }
-        let oracle: Option<Address> = env.storage().instance().get(&ORACLE);
-        let admin = Self::get_admin(&env)?;
-        match oracle {
-            Some(o) => o.require_auth(),
-            None => admin.require_auth(),
-        }
-
-        let rate: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
-        if rate <= 0 {
-            return Err(ContractError::ExportRateNotSet);
-        }
-
-        let _guard = ReentrancyGuard::enter(&env)?;
-
-        let key = DataKey::Meter(meter_id.clone());
-        let mut meter = Self::get_meter_or_error(&env, &key)?;
-
-        // ── EFFECTS ─────────────────────────────────────────────────────────
+    /// Return the season active at the current ledger timestamp, if any
+    /// (Issue #992).
+    pub fn get_current_season(env: Env) -> Option<SeasonalRate> {
+        let rates: Vec<SeasonalRate> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SeasonalRates)
+            .unwrap_or_else(|| vec![&env]);
         let now = env.ledger().timestamp();
-        let credit = i128::from(kwh).saturating_mul(rate);
-
-        meter.export_kwh = meter.export_kwh.saturating_add(kwh);
-        env.storage().persistent().set(&key, &meter);
-
-        // Credit the meter owner's prepaid balance.
-        let bal_key = DataKey::MeterBalance(meter_id.clone());
-        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&bal_key, &balance.saturating_add(credit));
-
-        // Track cumulative export credit for the meter.
-        let credit_key = DataKey::GridExportCredit(meter_id.clone());
-        let total_credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&credit_key, &total_credit.saturating_add(credit));
-
-        // Append to the meter's export history.
-        let history_key = DataKey::GridExportHistory(meter_id.clone());
-        let mut history: Vec<GridExport> = env
-            .storage()
-            .persistent()
-            .get(&history_key)
-            .unwrap_or_else(|| vec![&env]);
-        history.push_back(GridExport {
-            meter_id: meter_id.clone(),
-            kwh,
-            credit,
-            rate,
-            timestamp: now,
-        });
-        env.storage().persistent().set(&history_key, &history);
-
-        // ── INTERACTIONS ────────────────────────────────────────────────────
-        env.events().publish(
-            (EVT_NS, symbol_short!("grid_exp"), meter_id),
-            (kwh, credit, rate, now),
-        );
-        Ok(credit)
-    }
-
-    /// Paginated grid export history for a meter (Issue #990). `limit` is
-    /// capped at [`MAX_EXPORT_PAGE`].
-    pub fn get_export_history(
-        env: Env,
-        meter_id: String,
-        offset: u32,
-        limit: u32,
-    ) -> Result<Vec<GridExport>, ContractError> {
-        Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
-        let limit = limit.min(MAX_EXPORT_PAGE);
-        let history: Vec<GridExport> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::GridExportHistory(meter_id))
-            .unwrap_or_else(|| vec![&env]);
-        let total = history.len();
-        if offset >= total {
-            return Ok(vec![&env]);
-        }
-        let end = (offset + limit).min(total);
-        let mut page: Vec<GridExport> = vec![&env];
-        for i in offset..end {
-            if let Some(entry) = history.get(i) {
-                page.push_back(entry);
+        for rate in rates.iter() {
+            if now >= rate.start_date && now < rate.end_date {
+                return Some(rate);
             }
         }
-        Ok(page)
-    }
-
-    /// Return `(import_kwh, export_kwh)` totals for a meter (Issue #990).
-    pub fn get_export_totals(env: Env, meter_id: String) -> Result<(u64, u64), ContractError> {
-        let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?;
-        Ok((meter.import_kwh, meter.export_kwh))
-    }
-
-    /// Cumulative grid export credit paid to a meter (Issue #990).
-    pub fn get_export_credit(env: Env, meter_id: String) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::GridExportCredit(meter_id))
-            .unwrap_or(0)
+        None
     }
 
     /// Store validated weekday/weekend windows. All timestamps are interpreted as UTC.
@@ -2956,6 +2987,27 @@ impl SolarGridContract {
         Ok(())
     }
     fn rate_at(env: &Env, timestamp: u64) -> i128 {
+        let base = Self::base_rate_at(env, timestamp);
+        // Apply the active seasonal multiplier, if any (Issue #992).
+        let rates: Vec<SeasonalRate> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SeasonalRates)
+            .unwrap_or_else(|| vec![env]);
+        for rate in rates.iter() {
+            if timestamp >= rate.start_date && timestamp < rate.end_date {
+                env.events().publish(
+                    (EVT_NS, Symbol::new(env, "SeasonalRateApplied"), rate.season.clone()),
+                    (rate.multiplier_bps, timestamp),
+                );
+                return base.saturating_mul(i128::from(rate.multiplier_bps)) / 10_000;
+            }
+        }
+        base
+    }
+
+    /// Resolve the time-of-use / unit price before any seasonal adjustment.
+    fn base_rate_at(env: &Env, timestamp: u64) -> i128 {
         let schedule: Option<PricingSchedule> = env.storage().instance().get(&PRICING_SCHEDULE);
         let Some(schedule) = schedule else {
             return Self::get_unit_price(env.clone());
@@ -3508,6 +3560,109 @@ impl SolarGridContract {
         Ok(payouts)
     }
 
+    // ── Grid stability services (#1016) ─────────────────────────────────────
+    /// Settle a verified frequency-response contribution for a meter.
+    pub fn record_grid_service_provided(
+        env: Env,
+        meter_id: String,
+        response_kwh: u64,
+        revenue: i128,
+    ) -> Result<(), ContractError> {
+        if response_kwh == 0 || revenue < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let oracle: Address = env
+            .storage()
+            .instance()
+            .get(&ORACLE)
+            .ok_or(ContractError::OracleNotSet)?;
+        oracle.require_auth();
+        let key = DataKey::Meter(meter_id.clone());
+        Self::get_meter_or_error(&env, &key)?;
+        let balance_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+        env.storage().persistent().set(&balance_key, &balance.saturating_add(revenue));
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "GridServiceProvided"), meter_id),
+            (response_kwh, revenue),
+        );
+        Ok(())
+    }
+
+    // ── Energy credit gifting and subscription boxes (#1018/#1019) ─────────
+    /// Transfer prepaid energy credits between two registered meter owners.
+    pub fn gift_energy_credit(
+        env: Env, sender_meter_id: String, recipient_meter_id: String, amount: i128, message: Option<String>,
+    ) -> Result<(), ContractError> {
+        if amount <= 0 { return Err(ContractError::InvalidAmount); }
+        if let Some(ref memo) = message { if memo.len() > MAX_MEMO_LEN { return Err(ContractError::MemoTooLong); } }
+        let sender_key = DataKey::Meter(sender_meter_id.clone());
+        let recipient_key = DataKey::Meter(recipient_meter_id.clone());
+        let sender = Self::get_meter_or_error(&env, &sender_key)?;
+        let recipient = Self::get_meter_or_error(&env, &recipient_key)?;
+        sender.owner.require_auth();
+        let sender_balance_key = DataKey::MeterBalance(sender_meter_id.clone());
+        let recipient_balance_key = DataKey::MeterBalance(recipient_meter_id.clone());
+        let sender_balance: i128 = env.storage().persistent().get(&sender_balance_key).unwrap_or(0);
+        if sender_balance < amount { return Err(ContractError::InsufficientBalance); }
+        let recipient_balance: i128 = env.storage().persistent().get(&recipient_balance_key).unwrap_or(0);
+        env.storage().persistent().set(&sender_balance_key, &(sender_balance - amount));
+        env.storage().persistent().set(&recipient_balance_key, &recipient_balance.saturating_add(amount));
+        let now = env.ledger().timestamp();
+        let gift = EnergyGift { sender: sender.owner.clone(), recipient: recipient.owner.clone(), amount, message, sent_at: now };
+        let mut history: Vec<EnergyGift> = env.storage().persistent().get(&DataKey::GiftHistory(sender.owner.clone())).unwrap_or(Vec::new(&env));
+        history.push_back(gift.clone());
+        env.storage().persistent().set(&DataKey::GiftHistory(sender.owner.clone()), &history);
+        env.events().publish((EVT_NS, Symbol::new(&env, "EnergyGifted")), (sender.owner, recipient.owner, amount));
+        Ok(())
+    }
+    pub fn get_gift_history(env: Env, owner: Address) -> Vec<EnergyGift> { env.storage().persistent().get(&DataKey::GiftHistory(owner)).unwrap_or(Vec::new(&env)) }
+    /// Admin creates a subscription box tier. Prices are in token base units.
+    pub fn create_subscription_tier(env: Env, name: String, price: i128, included_kwh: u64, rollover_limit: u64) -> Result<u32, ContractError> {
+        Self::require_admin_action(&env, "create_subscription_tier", "contract")?;
+        if price <= 0 || included_kwh == 0 { return Err(ContractError::InvalidAmount); }
+        let id: u32 = env.storage().instance().get(&DataKey::SubscriptionTierCount).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::SubscriptionTier(id), &SubscriptionTier { id, name, price, included_kwh, rollover_limit });
+        env.storage().instance().set(&DataKey::SubscriptionTierCount, &(id + 1));
+        Ok(id)
+    }
+    pub fn get_subscription_tier(env: Env, tier_id: u32) -> Option<SubscriptionTier> { env.storage().persistent().get(&DataKey::SubscriptionTier(tier_id)) }
+    pub fn subscribe(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        owner.require_auth();
+        let tier = Self::get_subscription_tier(env.clone(), tier_id).ok_or(ContractError::InvalidConfiguration)?;
+        env.storage().persistent().set(&DataKey::Subscription(owner.clone()), &EnergySubscription { owner: owner.clone(), tier_id, remaining_kwh: tier.included_kwh, rollover_kwh: 0, renewed_at: env.ledger().timestamp(), active: true });
+        env.events().publish((EVT_NS, Symbol::new(&env, "SubscriptionRenewed")), (owner, tier_id, tier.price));
+        Ok(())
+    }
+    pub fn get_subscription(env: Env, owner: Address) -> Option<EnergySubscription> { env.storage().persistent().get(&DataKey::Subscription(owner)) }
+    pub fn upgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> { Self::change_subscription(env, owner, tier_id) }
+    pub fn downgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> { Self::change_subscription(env, owner, tier_id) }
+    fn change_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        owner.require_auth();
+        let tier = Self::get_subscription_tier(env.clone(), tier_id).ok_or(ContractError::InvalidConfiguration)?;
+        let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner.clone())).ok_or(ContractError::InvalidConfiguration)?;
+        sub.tier_id = tier_id; sub.rollover_kwh = sub.remaining_kwh.min(tier.rollover_limit); sub.remaining_kwh = tier.included_kwh; sub.renewed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&DataKey::Subscription(owner.clone()), &sub);
+        env.events().publish((EVT_NS, Symbol::new(&env, "SubscriptionRenewed")), (owner, tier_id, tier.price));
+        Ok(())
+    }
+    pub fn renew_subscription(env: Env, owner: Address) -> Result<(), ContractError> {
+        owner.require_auth();
+        let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner.clone())).ok_or(ContractError::InvalidConfiguration)?;
+        let tier = Self::get_subscription_tier(env.clone(), sub.tier_id).ok_or(ContractError::InvalidConfiguration)?;
+        let meter_ids: Vec<String> = env.storage().persistent().get(&DataKey::OwnerMeters(owner.clone())).unwrap_or(Vec::new(&env));
+        let meter_id = meter_ids.get(0).ok_or(ContractError::MeterNotFound)?;
+        let balance_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+        if balance < tier.price { return Err(ContractError::InsufficientBalance); }
+        sub.rollover_kwh = sub.remaining_kwh.min(tier.rollover_limit); sub.remaining_kwh = tier.included_kwh.saturating_add(sub.rollover_kwh); sub.renewed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&balance_key, &(balance - tier.price)); env.storage().persistent().set(&DataKey::Subscription(owner.clone()), &sub);
+        env.events().publish((EVT_NS, Symbol::new(&env, "SubscriptionRenewed")), (owner, sub.tier_id, tier.price)); Ok(())
+    }
+    pub fn consume_subscription_kwh(env: Env, owner: Address, kwh: u64) -> Result<u64, ContractError> {
+        let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner)).ok_or(ContractError::InvalidConfiguration)?;
+        if sub.remaining_kwh < kwh { return Err(ContractError::InsufficientBalance); } sub.remaining_kwh -= kwh; let remaining = sub.remaining_kwh; env.storage().persistent().set(&DataKey::Subscription(sub.owner.clone()), &sub); Ok(remaining)
+    }
     // ── Emergency / admin controls (Closes #686) ─────────────────────────────
 
     /// Announce, then (after a timelock) execute, an emergency withdrawal of
@@ -4151,6 +4306,175 @@ impl SolarGridContract {
     pub fn set_referrer(env: Env, referred: Address, referrer: Address) -> Result<(), ContractError> { referred.require_auth(); if referred == referrer || env.storage().persistent().has(&DataKey::Referrer(referred.clone())) { return Err(ContractError::InvalidReferral); } env.storage().persistent().set(&DataKey::Referrer(referred), &referrer); let key = DataKey::ReferralStats(referrer); let mut stats: ReferralStats = env.storage().persistent().get(&key).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }); stats.referred_count = stats.referred_count.saturating_add(1); env.storage().persistent().set(&key, &stats); Ok(()) }
     pub fn get_referral_stats(env: Env, user: Address) -> ReferralStats { env.storage().persistent().get(&DataKey::ReferralStats(user)).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }) }
     pub fn get_referral_credit(env: Env, user: Address) -> i128 { env.storage().persistent().get(&DataKey::ReferralCredit(user)).unwrap_or(0) }
+
+    // ── Community solar farms (Issue #984) ────────────────────────────────────
+
+    /// Register a new community solar farm. Admin-only.
+    ///
+    /// `capacity_watts` is the farm's total generation capacity and
+    /// `share_price` is the cost of a single share in the token's smallest
+    /// unit. Both must be positive.
+    ///
+    /// Emits: `sfarm_new { farm_id, capacity_watts, share_price }`
+    pub fn create_solar_farm(
+        env: Env,
+        farm_id: String,
+        capacity_watts: u32,
+        share_price: i128,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "create_solar_farm", "contract")?;
+        if capacity_watts == 0 || share_price <= 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        let key = DataKey::SolarFarm(farm_id.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(ContractError::SolarFarmAlreadyExists);
+        }
+        let farm = SolarFarm {
+            id: farm_id.clone(),
+            capacity_watts,
+            shareholders: Map::new(&env),
+            generation_data: Vec::new(&env),
+            total_generation: 0,
+            total_shares: 0,
+            share_price,
+        };
+        env.storage().persistent().set(&key, &farm);
+
+        let mut list: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SolarFarmList)
+            .unwrap_or_else(|| vec![&env]);
+        list.push_back(farm_id.clone());
+        env.storage().instance().set(&DataKey::SolarFarmList, &list);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("sfarm_new"), farm_id),
+            (capacity_watts, share_price),
+        );
+        Ok(())
+    }
+
+    /// Purchase `amount` shares in a community solar farm (#984).
+    ///
+    /// Transfers `amount * share_price` from `buyer` to the contract, credits
+    /// the buyer's share balance, and emits `SharePurchased`.
+    ///
+    /// SECURITY: Follows checks-effects-interactions ordering and holds the
+    /// reentrancy lock across the token transfer.
+    pub fn buy_solar_share(
+        env: Env,
+        farm_id: String,
+        buyer: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        if amount <= 0 {
+            return Err(ContractError::InvalidShareAmount);
+        }
+        buyer.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let key = DataKey::SolarFarm(farm_id.clone());
+        let mut farm: SolarFarm = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::SolarFarmNotFound)?;
+
+        let cost = amount
+            .checked_mul(farm.share_price)
+            .ok_or(ContractError::InvalidAmount)?;
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
+        let shares_key = DataKey::ShareholderShares(farm_id.clone(), buyer.clone());
+        let existing: i128 = farm.shareholders.get(buyer.clone()).unwrap_or(0);
+        let new_shares = existing.saturating_add(amount);
+        farm.shareholders.set(buyer.clone(), new_shares);
+        farm.total_shares = farm.total_shares.saturating_add(amount);
+        env.storage().persistent().set(&key, &farm);
+        env.storage().persistent().set(&shares_key, &new_shares);
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        let token_address = Self::get_token_address(&env)?;
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&buyer, env.current_contract_address(), &cost);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("shr_buy"), farm_id),
+            (buyer, amount, cost),
+        );
+        Ok(())
+    }
+
+    /// Distribute generation credits to a farm's shareholders proportionally
+    /// to their share of the farm's total shares (#984).
+    ///
+    /// Records the generation period, adds it to the farm's lifetime
+    /// `total_generation`, and emits `CreditsDistributed` with the per-address
+    /// credit map. Admin-only.
+    pub fn distribute_generation_credits(
+        env: Env,
+        farm_id: String,
+        generation_kwh: i128,
+    ) -> Result<Map<Address, i128>, ContractError> {
+        Self::require_admin_action(&env, "distribute_generation_credits", "contract")?;
+        if generation_kwh <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let key = DataKey::SolarFarm(farm_id.clone());
+        let mut farm: SolarFarm = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::SolarFarmNotFound)?;
+
+        let mut credits: Map<Address, i128> = Map::new(&env);
+        if farm.total_shares > 0 {
+            for (holder, shares) in farm.shareholders.iter() {
+                let credit = generation_kwh
+                    .checked_mul(shares)
+                    .ok_or(ContractError::InvalidAmount)?
+                    .checked_div(farm.total_shares)
+                    .ok_or(ContractError::InvalidAmount)?;
+                credits.set(holder, credit);
+            }
+        }
+
+        farm.generation_data.push_back(GenerationRecord {
+            timestamp: env.ledger().timestamp(),
+            generation_kwh,
+        });
+        farm.total_generation = farm.total_generation.saturating_add(generation_kwh);
+        env.storage().persistent().set(&key, &farm);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("crd_dist"), farm_id),
+            (generation_kwh, credits.clone()),
+        );
+        Ok(credits)
+    }
+
+    /// Return a community solar farm's full definition (#984).
+    pub fn get_solar_farm(env: Env, farm_id: String) -> Result<SolarFarm, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SolarFarm(farm_id))
+            .ok_or(ContractError::SolarFarmNotFound)
+    }
+
+    /// Return the number of shares `holder` owns in `farm_id` (#984).
+    pub fn get_shareholder_shares(env: Env, farm_id: String, holder: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ShareholderShares(farm_id, holder))
+            .unwrap_or(0)
+    }
+
+    /// Return the lifetime energy generated by `farm_id`, in kWh (#984).
+    pub fn get_total_generation(env: Env, farm_id: String) -> Result<i128, ContractError> {
+        Ok(Self::get_solar_farm(env, farm_id)?.total_generation)
+    }
     /// Migrate a v0 (LegacyMeter) entry to the current schema. Admin-only.
     pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "migrate_meter", "contract")?;
