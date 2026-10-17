@@ -117,6 +117,51 @@ export function handleDiagnosticResultTopic(topic: string, payload: Buffer): boo
   return true;
 }
 
+/**
+ * Issue #988: handle a power-quality reading published by a meter.
+ * Payload: { voltage, frequency, thd }. Malformed payloads are logged and
+ * ignored so the bridge keeps running.
+ */
+export function handlePowerQualityMessage(meterId: string, payload: Buffer): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(payload.toString());
+  } catch (err) {
+    logger.error("Malformed power-quality MQTT payload (not JSON), skipping", {
+      meterId,
+      raw: payload.toString(),
+      err,
+    });
+    return;
+  }
+
+  const { voltage, frequency, thd } = (raw ?? {}) as {
+    voltage?: unknown;
+    frequency?: unknown;
+    thd?: unknown;
+  };
+
+  if (
+    typeof voltage !== "number" || !Number.isFinite(voltage) ||
+    typeof frequency !== "number" || !Number.isFinite(frequency) ||
+    typeof thd !== "number" || !Number.isFinite(thd)
+  ) {
+    logger.error("Invalid power-quality MQTT payload (non-finite values), skipping", {
+      meterId,
+      raw: payload.toString(),
+    });
+    return;
+  }
+
+  try {
+    recordPowerQualitySample(meterId, { voltage, frequency, thd });
+    analyzePowerQuality(meterId);
+    logger.info("Power quality sample recorded", { meterId, voltage, frequency, thd });
+  } catch (err) {
+    logger.error("Power quality handling failed", { meterId, err });
+  }
+}
+
 export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): boolean {
   const segments = topic.split("/");
   if (

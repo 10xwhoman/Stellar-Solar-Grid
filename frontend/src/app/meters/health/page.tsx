@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { env } from "@/lib/env";
+import { getPowerQuality, type PowerQualityResponse } from "@/services/meterService";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 
@@ -53,6 +54,7 @@ const LOG_STATUS: Record<DiagnosticLog["status"], string> = {
 export default function MeterHealthPage() {
   const [data, setData] = useState<{ summary: Record<Status, number>; meters: MeterHealth[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedMeter, setSelectedMeter] = useState<string | null>(null);
 
   const [selectedMeter, setSelectedMeter] = useState<string | null>(null);
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
@@ -126,6 +128,23 @@ export default function MeterHealthPage() {
                 <span className="capitalize">{s}</span>: {data.summary[s]}
               </div>
             ))}
+          </div>
+          <div className="mb-4">
+            <label htmlFor="pq-meter" className="mr-2 text-sm font-medium">
+              Power quality meter:
+            </label>
+            <select
+              id="pq-meter"
+              className="border rounded px-2 py-1 text-sm"
+              value={selectedMeter ?? data.meters[0]?.meterId ?? ""}
+              onChange={(e) => setSelectedMeter(e.target.value)}
+            >
+              {data.meters.map((m) => (
+                <option key={m.meterId} value={m.meterId}>
+                  {m.meterId}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

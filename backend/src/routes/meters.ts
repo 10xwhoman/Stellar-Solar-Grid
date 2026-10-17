@@ -283,6 +283,121 @@ export function createMeterRouter(stellar: StellarService) {
     })
   );
 
+  /**
+   * GET /api/meters/:meterId/power-quality — real-time power quality monitoring (Issue #988).
+   *
+   * Returns the latest voltage/frequency/THD reading, any detected quality
+   * issues (sags, swells, harmonics), historical trending, and the thresholds
+   * used to classify readings. Registered BEFORE the generic /:id route so it
+   * is not shadowed.
+   *
+   * Query params:
+   *   days     — history window in days (default 7, max 90)
+   *   page     — history page (default 1)
+   *   pageSize — history page size (default 100, max 500)
+   */
+  meterRouter.get(
+    "/:meterId/power-quality",
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.meterId;
+
+      // Validate the meter exists on-chain.
+      try {
+        const result = await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+        const meter = StellarSdk.scValToNative(result) as any;
+        if (!meter) {
+          return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+        }
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const days = Math.min(
+        90,
+        Math.max(1, parseInt((req.query.days as string) ?? "7", 10) || 7),
+      );
+      const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10) || 1);
+      const pageSize = Math.min(
+        500,
+        Math.max(1, parseInt((req.query.pageSize as string) ?? "100", 10) || 100),
+      );
+
+      const summary = getPowerQualitySummary(meterId);
+      const history = getPowerQualityHistory(meterId, days);
+
+      const start = (page - 1) * pageSize;
+      const paginatedHistory = history.slice(start, start + pageSize);
+
+      return res.json({
+        meterId,
+        current: summary.current,
+        issues: summary.issues,
+        history: paginatedHistory,
+        thresholds: POWER_QUALITY_THRESHOLDS,
+        pagination: {
+          page,
+          pageSize,
+          total: history.length,
+          pages: Math.ceil(history.length / pageSize),
+        },
+      });
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/power-quality — IoT sensor ingestion for power quality
+   * readings (Issue #988). Accepts voltage, frequency, and THD measurements and
+   * persists them for analytics and alerting.
+   */
+  meterRouter.post(
+    "/:id/power-quality",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      const { voltage, frequency, thd, timestamp } = req.body ?? {};
+
+      const voltageNum = Number(voltage);
+      const frequencyNum = Number(frequency);
+      const thdNum = Number(thd);
+
+      if (!Number.isFinite(voltageNum) || voltageNum <= 0) {
+        return res.status(400).json({ error: "voltage must be a positive number", code: "VALIDATION_ERROR" });
+      }
+      if (!Number.isFinite(frequencyNum) || frequencyNum <= 0) {
+        return res.status(400).json({ error: "frequency must be a positive number", code: "VALIDATION_ERROR" });
+      }
+      if (!Number.isFinite(thdNum) || thdNum < 0) {
+        return res.status(400).json({ error: "thd must be a non-negative number", code: "VALIDATION_ERROR" });
+      }
+
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const reading = recordPowerQualityReading(meterId, {
+        voltage: voltageNum,
+        frequency: frequencyNum,
+        thd: thdNum,
+        timestamp: timestamp ?? new Date().toISOString(),
+      });
+
+      const summary = getPowerQualitySummary(meterId);
+
+      return res.status(201).json({
+        meterId,
+        reading,
+        issues: summary.issues,
+        thresholds: POWER_QUALITY_THRESHOLDS,
+      });
+    }),
+  );
+
   /** GET /api/meters/:id/status — lightweight status poll */
   meterRouter.get(
     "/:id/status",

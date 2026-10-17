@@ -23,6 +23,13 @@ export async function getMetersPaginated(offset: number, limit: number): Promise
   return fetchMetersPaginated(offset, limit);
 }
 
+export async function getPowerQuality(
+  meterId: string,
+  days?: number,
+): Promise<PowerQualityResponse> {
+  return getMeterPowerQuality(meterId, days);
+}
+
 export async function transferOwnership(
   sourceAddress: string,
   meterId: string,

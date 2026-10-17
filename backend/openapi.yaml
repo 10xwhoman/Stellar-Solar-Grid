@@ -1288,6 +1288,74 @@ paths:
         "400":
           $ref: "#/components/responses/ValidationError"
 
+  /api/meters/{meterId}/power-quality:
+    get:
+      summary: Get power quality metrics for a meter
+      description: |
+        Returns the latest voltage, frequency, and THD readings for a meter,
+        any detected quality issues (sags, swells, harmonics), a historical
+        trend over the requested window, and the configured thresholds (#988).
+      operationId: getMeterPowerQuality
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: days
+          in: query
+          description: Number of days of history to include (default 7)
+          schema: { type: integer, default: 7, minimum: 1, maximum: 90 }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 500 }
+      responses:
+        "200":
+          description: Power quality state and history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PowerQualityResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      summary: Ingest a power quality sample for a meter (admin only)
+      description: |
+        Records a voltage/frequency/THD sample reported by an IoT power quality
+        sensor. The backend evaluates the sample against configured thresholds
+        and raises alerts when quality drops below acceptable levels (#988).
+      operationId: ingestMeterPowerQuality
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PowerQualitySample"
+      responses:
+        "200":
+          description: Sample recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PowerQualityResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/meters/{id}/notes:
     get:
       summary: List all notes for a meter
