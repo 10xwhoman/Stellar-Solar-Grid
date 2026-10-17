@@ -59,6 +59,45 @@ export interface PaymentHistoryFilters {
   sortOrder?: "asc" | "desc";
 }
 
+export interface GridExport {
+  id: string;
+  meterId: string;
+  kwh: number;
+  creditAmount: number;
+  rate: number;
+  timestamp: string;
+}
+
+export interface MeterExportHistory {
+  exports: GridExport[];
+  totalImportedKwh: number;
+  totalExportedKwh: number;
+  totalCreditAmount: number;
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+/**
+ * Fetches the grid export history for a meter along with import/export totals.
+ */
+export async function getMeterExports(
+  meterId: string,
+  page = 1,
+  pageSize = 20,
+): Promise<MeterExportHistory> {
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  const res = await fetch(`${API_BASE}/meters/${meterId}/exports?${params.toString()}`);
+  if (!res.ok) {
+    const { error } = (await res.json()) as { error: string };
+    throw new Error(error ?? "Failed to fetch meter exports");
+  }
+  return (await res.json()) as MeterExportHistory;
+}
+
 export async function getPaymentHistory(filters: PaymentHistoryFilters = {}): Promise<PaymentRecord[]> {
   const params = new URLSearchParams();
   if (filters.startDate) params.set("startDate", filters.startDate);
