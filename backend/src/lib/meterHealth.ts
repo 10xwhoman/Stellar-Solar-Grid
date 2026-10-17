@@ -9,9 +9,10 @@
  *   yellow — heartbeat older than 1h, or error rate >= 10%
  *   red    — no heartbeat for HEALTH_RED_AFTER_MS (default 24h) → alert raised
  */
+import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
-import { listDevices } from "./deviceRegistry.js";
-import { notifyEmergencyContacts } from "./emergencyContacts.js";
+import { getDb } from "./db.js";
+import { publishCommand } from "./mqttBridge.js";
 
 export type HealthStatus = "green" | "yellow" | "red";
 
@@ -170,4 +171,254 @@ export function startHealthMonitor(intervalMs = 15 * 60 * 1000): void {
 
 export function _resetMeterHealth(): void {
   meters.clear();
+}
+
+/* ------------------------------------------------------------------ *
+ * Remote diagnostics (#993)
+ * ------------------------------------------------------------------ */
+
+export type DiagnosticCommand = "reboot" | "self-test" | "check-connectivity";
+
+export type DiagnosticStatus = "pending" | "success" | "failure";
+
+export type DiagnosticResult = {
+  status: DiagnosticStatus;
+  output?: string;
+  durationMs?: number;
+  error?: string;
+};
+
+export type DiagnosticLog = {
+  id: number;
+  meterId: string;
+  requestId: string;
+  command: DiagnosticCommand;
+  status: DiagnosticStatus;
+  output: string | null;
+  durationMs: number | null;
+  error: string | null;
+  requestedAt: string;
+  completedAt: string | null;
+};
+
+export type DiagnosticRequest = {
+  meterId: string;
+  requestId: string;
+  command: DiagnosticCommand;
+  status: DiagnosticStatus;
+  requestedAt: string;
+};
+
+export type ListDiagnosticLogsOptions = {
+  limit?: number;
+  command?: DiagnosticCommand;
+};
+
+const DIAGNOSTIC_COMMANDS: DiagnosticCommand[] = ["reboot", "self-test", "check-connectivity"];
+
+export function isDiagnosticCommand(value: unknown): value is DiagnosticCommand {
+  return typeof value === "string" && (DIAGNOSTIC_COMMANDS as string[]).includes(value);
+}
+
+function ensureDiagnosticTable(): void {
+  const db = getDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS diagnostic_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meter_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      command TEXT NOT NULL,
+      status TEXT NOT NULL,
+      output TEXT,
+      duration_ms INTEGER,
+      error TEXT,
+      requested_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_logs_meter
+      ON diagnostic_logs (meter_id, requested_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_diagnostic_logs_request
+      ON diagnostic_logs (request_id);
+  `);
+}
+
+type DiagnosticRow = {
+  id: number;
+  meter_id: string;
+  request_id: string;
+  command: string;
+  status: string;
+  output: string | null;
+  duration_ms: number | null;
+  error: string | null;
+  requested_at: string;
+  completed_at: string | null;
+};
+
+function rowToLog(row: DiagnosticRow): DiagnosticLog {
+  return {
+    id: row.id,
+    meterId: row.meter_id,
+    requestId: row.request_id,
+    command: row.command as DiagnosticCommand,
+    status: row.status as DiagnosticStatus,
+    output: row.output,
+    durationMs: row.duration_ms,
+    error: row.error,
+    requestedAt: row.requested_at,
+    completedAt: row.completed_at,
+  };
+}
+
+/**
+ * Record a pending diagnostic and publish the command to the meter over MQTT.
+ * Returns the created request (including the generated requestId).
+ */
+export function triggerDiagnostic(
+  meterId: string,
+  command: DiagnosticCommand,
+): DiagnosticRequest {
+  if (!isDiagnosticCommand(command)) {
+    throw new Error(`Unsupported diagnostic command: ${command}`);
+  }
+  ensureDiagnosticTable();
+  const requestId = randomUUID();
+  const requestedAt = new Date().toISOString();
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO diagnostic_logs
+       (meter_id, request_id, command, status, requested_at)
+     VALUES (?, ?, ?, 'pending', ?)`,
+  ).run(meterId, requestId, command, requestedAt);
+
+  try {
+    publishCommand(meterId, command, { requestId });
+  } catch (err) {
+    logger.error({ err, meterId, command, requestId }, "Failed to publish diagnostic command");
+  }
+
+  logger.info({ meterId, command, requestId }, "Diagnostic command triggered");
+  return { meterId, requestId, command, status: "pending", requestedAt };
+}
+
+/** Persist the outcome reported by the meter for a previously triggered diagnostic. */
+export function recordDiagnosticResult(
+  meterId: string,
+  requestId: string,
+  result: DiagnosticResult,
+): DiagnosticLog | undefined {
+  ensureDiagnosticTable();
+  const db = getDb();
+  const completedAt = new Date().toISOString();
+  const info = db
+    .prepare(
+      `UPDATE diagnostic_logs
+         SET status = ?, output = ?, duration_ms = ?, error = ?, completed_at = ?
+       WHERE meter_id = ? AND request_id = ?`,
+    )
+    .run(
+      result.status,
+      result.output ?? null,
+      typeof result.durationMs === "number" ? Math.round(result.durationMs) : null,
+      result.error ?? null,
+      completedAt,
+      meterId,
+      requestId,
+    );
+
+  if (info.changes === 0) {
+    logger.warn({ meterId, requestId }, "Diagnostic result for unknown request");
+    return undefined;
+  }
+
+  logger.info(
+    { meterId, requestId, status: result.status, durationMs: result.durationMs },
+    "Diagnostic result recorded",
+  );
+  const row = db
+    .prepare(`SELECT * FROM diagnostic_logs WHERE meter_id = ? AND request_id = ?`)
+    .get(meterId, requestId) as DiagnosticRow | undefined;
+  return row ? rowToLog(row) : undefined;
+}
+
+/** Return recent diagnostic results for a meter, newest first. */
+export function listDiagnosticLogs(
+  meterId: string,
+  options: ListDiagnosticLogsOptions = {},
+): DiagnosticLog[] {
+  ensureDiagnosticTable();
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 500);
+  const db = getDb();
+  const rows = options.command
+    ? (db
+        .prepare(
+          `SELECT * FROM diagnostic_logs
+             WHERE meter_id = ? AND command = ?
+             ORDER BY requested_at DESC, id DESC
+             LIMIT ?`,
+        )
+        .all(meterId, options.command, limit) as DiagnosticRow[])
+    : (db
+        .prepare(
+          `SELECT * FROM diagnostic_logs
+             WHERE meter_id = ?
+             ORDER BY requested_at DESC, id DESC
+             LIMIT ?`,
+        )
+        .all(meterId, limit) as DiagnosticRow[]);
+  return rows.map(rowToLog);
+}
+
+export type IssuePattern = {
+  id: string;
+  description: string;
+  match: (result: DiagnosticResult) => boolean;
+  suggestedFix: string;
+};
+
+/**
+ * Knowledge base of common issue signatures observed in diagnostic results,
+ * each mapped to a suggested fix for technicians.
+ */
+export const COMMON_ISSUE_PATTERNS: IssuePattern[] = [
+  {
+    id: "reboot-failure",
+    description: "Meter failed to reboot (repeated reboot failures)",
+    match: (r) => r.status === "failure" && /reboot/i.test(r.error ?? r.output ?? ""),
+    suggestedFix:
+      "Power-cycle the meter locally and verify firmware version; if reboots keep failing, schedule a firmware reflash or hardware replacement.",
+  },
+  {
+    id: "high-latency",
+    description: "Diagnostic completed but with high latency",
+    match: (r) => typeof r.durationMs === "number" && r.durationMs > 5000,
+    suggestedFix:
+      "Check network signal strength and SIM data plan; move the meter antenna or switch to a stronger carrier if latency persists.",
+  },
+  {
+    id: "packet-loss",
+    description: "Connectivity check reported packet loss",
+    match: (r) => /packet\s*loss|timeout|unreachable/i.test(`${r.error ?? ""} ${r.output ?? ""}`),
+    suggestedFix:
+      "Verify the meter's network route and firewall rules; reset the modem and confirm the broker host is reachable.",
+  },
+  {
+    id: "self-test-failure",
+    description: "Self-test reported a hardware or firmware fault",
+    match: (r) => r.status === "failure" && /self-?test/i.test(r.error ?? r.output ?? ""),
+    suggestedFix:
+      "Review the self-test output for the failing subsystem; replace the affected module or escalate to the hardware team.",
+  },
+  {
+    id: "generic-failure",
+    description: "Diagnostic failed without a recognised signature",
+    match: (r) => r.status === "failure",
+    suggestedFix:
+      "Retry the diagnostic; if it keeps failing, collect the full log and escalate to the engineering team.",
+  },
+];
+
+/** Return a suggested fix for a diagnostic result, or undefined if none match. */
+export function getSuggestedFix(result: DiagnosticResult): string | undefined {
+  return COMMON_ISSUE_PATTERNS.find((p) => p.match(result))?.suggestedFix;
 }

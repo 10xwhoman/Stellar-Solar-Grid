@@ -275,6 +275,106 @@ The balance is read from the contract unless `?balance=<stroops>` is given.
 `estimatedDaysRemaining` is `null` when there is no usage history or usage is
 not trending toward depletion.
 
+## Weather-Based Usage Forecasting (#982)
+
+`GET /api/meters/:meterId/forecast?days=7`
+
+Returns a weather-driven forecast of energy usage and solar generation for up
+to 7 days (default 7). Each day includes a point estimate plus a confidence
+band, and the response flags whether the meter is predicted to run out of
+credit within the horizon.
+
+The forecast depends on the weather API (OpenWeatherMap or compatible). Set
+`WEATHER_API_KEY` and, optionally, `WEATHER_API_BASE_URL` (default
+`https://api.openweathermap.org/data/2.5`) and `WEATHER_FORECAST_DAYS`. When
+the weather API is unreachable the service falls back to climatology and sets
+`weatherStale: true`; forecasts are still returned but confidence bands widen.
+
+```json
+{
+  "meterId": "METER1",
+  "horizonDays": 7,
+  "weatherStale": false,
+  "generatedAt": "2026-09-29T00:00:00.000Z",
+  "creditAlert": {
+    "willDeplete": true,
+    "estimatedDepletionDate": "2026-10-03",
+    "estimatedDaysRemaining": 4.2
+  },
+  "days": [
+    {
+      "date": "2026-09-29",
+      "predictedUsageKwh": 4.3,
+      "usageConfidence": { "low": 3.8, "high": 4.9, "level": 0.9 },
+      "predictedSolarKwh": 6.1,
+      "solarConfidence": { "low": 4.7, "high": 7.4, "level": 0.9 },
+      "weather": { "temperatureC": 24, "cloudCoverPct": 20, "sunlightHours": 8.4 }
+    }
+  ]
+}
+```
+
+`creditAlert.willDeplete` is `false` when the balance covers the whole horizon
+or no usage history is available.
+
+## Appliance-Level Breakdown (#982)
+
+`GET /api/meters/:meterId/appliances?days=30`
+
+Breaks consumption down per appliance, with a trend against the previous
+window and saving recommendations.
+
+```json
+{
+  "meterId": "METER1",
+  "windowDays": 30,
+  "totalKwh": 128.4,
+  "appliances": [
+    {
+      "applianceId": "fridge",
+      "name": "Refrigerator",
+      "usageKwh": 42.1,
+      "sharePct": 32.8,
+      "trendPct": 4.2,
+      "recommendation": "Shift defrost cycles to off-peak hours to save ~3 kWh/month."
+    }
+  ]
+}
+```
+
+## Meter Diagnostics (#982)
+
+`POST /api/meters/:meterId/diagnostics`
+
+Triggers a diagnostic action on the meter. Body:
+`{ "action": "reboot" | "self-test" | "connectivity" }`. Returns the queued
+diagnostic run.
+
+```json
+{ "diagnosticId": "diag_01H...", "action": "self-test", "status": "queued", "requestedAt": "2026-09-29T00:00:00.000Z" }
+```
+
+`GET /api/meters/:meterId/diagnostic-logs?limit=20`
+
+Returns past diagnostic results with suggested fixes.
+
+```json
+{
+  "meterId": "METER1",
+  "logs": [
+    {
+      "diagnosticId": "diag_01H...",
+      "action": "connectivity",
+      "status": "completed",
+      "result": "degraded",
+      "details": "Packet loss 6% over the last hour.",
+      "suggestedFix": "Check the meter's uplink antenna and retry the connectivity test.",
+      "completedAt": "2026-09-29T00:05:00.000Z"
+    }
+  ]
+}
+```
+
 ## Widget Summary (#901)
 
 ### `GET /api/widgets/summary?meterId=<id>`
@@ -369,124 +469,47 @@ See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.
 
-## Emergency Contact Management (#1000)
+---
 
-Lets a user register people to notify in a critical event, and choose which event types notify
-each contact. This is unrelated to `routes/emergency.ts` (#893)'s "emergency energy sharing" pool
-for outages — these are personal contacts for a user's own account.
+## Energy Arbitrage Opportunities Detector (#1009)
 
-- `POST /api/users/emergency-contacts` — add a contact. Body:
-  ```json
-  {
-    "user_address": "G...",
-    "name": "Jane Doe",
-    "phone": "+15551234567",
-    "email": "jane@example.com",
-    "relationship": "Spouse",
-    "notify_on_tamper": true,
-    "notify_on_outage": true
-  }
-  ```
-  At least one of `phone` / `email` is required. `notify_on_tamper` and `notify_on_outage` default
-  to `true` when omitted. Response (201): `{ "contact": { "id", "userAddress", "name", "phone",
-  "email", "relationship", "notifyOnTamper", "notifyOnOutage", "createdAt" } }`.
+### `GET /api/meters/:meterId/arbitrage`
 
-- `GET /api/users/emergency-contacts?user_address=G...` — list a user's contacts. Response (200):
-  `{ "contacts": [ ... ] }`.
+Analyzes real-time 24-hour grid prices and solar generation for `:meterId`, computes the optimal battery charge/discharge schedule, estimates daily and monthly profit potential, and returns automated alerts when profitable arbitrage windows are detected.
 
-Contacts are stored in `emergency_contacts` (one row per contact, keyed by `user_address`), with a
-`notify_on_tamper` / `notify_on_outage` flag per row controlling which critical events notify that
-contact.
+**Query Parameters:**
+- `batteryCapacityKwh` *(optional, number, default `13.5`)* — Usable battery capacity in kWh.
+- `roundTripEfficiency` *(optional, number, default `0.9`)* — Battery charge/discharge round-trip efficiency (`0..1`).
+- `minSpreadPercent` *(optional, number, default `20`)* — Minimum price spread percentage required to flag an opportunity.
 
-Notification hook: when the theft/tamper monitor (`theftDetection.ts`) raises an alert, or the meter
-health monitor (`meterHealth.ts`) marks a meter `red` after 24h of silence (extended outage), the
-owning user's address is resolved via the device registry (`deviceRegistry.listDevices({ meterId })`)
-and `emergencyContacts.notifyEmergencyContacts(userAddress, eventType, meterId)` is called. That
-function looks up the user's contacts, keeps only those with the matching `notify_on_*` flag
-enabled, and emails each contact that has an email on file via the existing mailer (#902). There is
-no SMS transport in this codebase (`smsProviders.ts` only resolves a region's display shortcode),
-so phone-only contacts are logged rather than silently dropped — delivery for those is not
-guaranteed. Both hooks are best-effort and never block or fail the underlying monitor.
-
-## Provider Revenue Analytics (#1002)
-
-Business/financial analytics for the energy provider — total revenue, MRR, ARPU, churn/retention,
-revenue trends, customer acquisition, and a geographic revenue breakdown. This is distinct from
-`GET /api/provider` (a single running revenue total read from the contract) and from
-`GET /api/analytics/usage` (meter *usage* analytics, not revenue). All endpoints below require the
-`X-Admin-Key` header.
-
-**Data source.** Every successful payment (`POST /api/payments`) is recorded into a dedicated
-`revenue_events` SQLite table (`lib/revenueStore.ts`, pooled better-sqlite3, same pattern as
-`lib/meterNotes.ts`), keyed by the payment's transaction hash so retries/duplicates never
-double-count. The contract itself (`get_provider_revenue`) only exposes one running total with no
-historical breakdown, which is why trends/MRR/ARPU/churn are computed from this event history
-instead. **Caveat:** this history only covers payments made after this feature shipped — there is
-no backfill from on-chain events predating it.
-
-**Geographic breakdown caveat.** The codebase has no dedicated latitude/longitude or
-country/region field on a meter. The closest existing geo dimension is the free-text `location`
-string indexed by `lib/meterMetadataIndex.ts` (the same index `GET /api/meters/map` reads). Each
-payment is tagged with its meter's indexed location at write time; meters with no indexed location
-bucket into `"Unknown"`. This is a simplification, not real geocoding.
-
-- `GET /api/provider/analytics?from=<ISO>&to=<ISO>&granularity=daily|monthly|yearly`
-
-  Query params (all optional):
-  - `from` — ISO date, start of window. Default: 12 months before `to`.
-  - `to` — ISO date, end of window. Default: now.
-  - `granularity` — `daily`, `monthly`, or `yearly`. Default: `monthly`.
-
-  Response (200):
-  ```json
-  {
-    "range": { "from": "2025-10-16T00:00:00.000Z", "to": "2026-10-16T00:00:00.000Z", "granularity": "monthly" },
-    "totalRevenue": 125000000,
-    "totalRevenueXlm": 12.5,
-    "mrr": 10000000,
-    "mrrXlm": 1.0,
-    "arpu": 5000000,
-    "arpuXlm": 0.5,
-    "totalPayments": 42,
-    "activeCustomers": 25,
-    "churn": {
-      "churnRate": 0.12,
-      "retentionRate": 0.88,
-      "previousPeriodCustomers": 25,
-      "currentPeriodCustomers": 24,
-      "retainedCustomers": 22,
-      "churnedCustomers": 3
-    },
-    "trend": [
-      { "bucket": "2026-09", "revenue": 10000000, "paymentCount": 8, "uniqueCustomers": 6 }
-    ],
-    "acquisition": [
-      { "bucket": "2026-09", "newCustomers": 2 }
-    ],
-    "geoBreakdown": [
-      { "region": "Lagos", "revenue": 50000000, "paymentCount": 15, "customers": 9, "percentageOfTotal": 40.0 },
-      { "region": "Unknown", "revenue": 20000000, "paymentCount": 6, "customers": 4, "percentageOfTotal": 16.0 }
-    ]
-  }
-  ```
-
-  Formulas:
-  - **MRR**: sum of revenue recognized within the calendar month (UTC) containing `to`. The
-    platform bills pay-as-you-go rather than fixed subscriptions, so this is "revenue actually
-    collected this month," not a committed run-rate.
-  - **ARPU**: `totalRevenue / distinct paying meters` within the window.
-  - **Churn rate**: comparing two equal-length, back-to-back periods ending at `to` — the fraction
-    of meters that paid in the previous period but did not pay again in the current period.
-    `retentionRate = 1 - churnRate`.
-  - **Customer acquisition**: a meter is counted as newly acquired in the bucket of its first-ever
-    payment (computed over full history, not just the requested window, so a meter whose first
-    payment predates `from` is correctly excluded from "new").
-
-- `GET /api/provider/analytics/export?format=pdf|xlsx&from=<ISO>&to=<ISO>&granularity=daily|monthly|yearly`
-
-  Exports the same analytics summary as a downloadable report. `format` is required.
-  - `format=pdf` returns `application/pdf` (built with the existing dependency-free PDF builder in
-    `lib/pdf.ts`, reused from receipts/bills — no new PDF dependency was added).
-  - `format=xlsx` returns `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` with
-    four sheets: Summary, Revenue Trend, Customer Acquisition, Geographic Breakdown. Built with
-    `exceljs` (added as a new dependency — no Excel-writing library existed in the backend yet).
+**Response (`200 OK`):**
+```json
+{
+  "meterId": "METER-001",
+  "generatedAt": "2026-10-16T06:30:00.000Z",
+  "batteryCapacityKwh": 13.5,
+  "roundTripEfficiency": 0.9,
+  "currentGridPricePerKwh": 0.08,
+  "currentSolarGenerationKw": 1.09,
+  "estimatedDailyProfitUsd": 5.18,
+  "estimatedMonthlyProfitUsd": 155.4,
+  "opportunities": [
+    {
+      "id": "METER-001-arb-night-peak",
+      "chargeWindowStartHour": 1,
+      "chargeWindowEndHour": 5,
+      "dischargeWindowStartHour": 17,
+      "dischargeWindowEndHour": 21,
+      "avgChargePricePerKwh": 0.08,
+      "avgDischargePricePerKwh": 0.31,
+      "spreadPerKwh": 0.2211,
+      "spreadPercent": 287.5,
+      "recommendedKwh": 10.8,
+      "estimatedProfitUsd": 2.39,
+      "recommendation": "Charge battery from grid between 01:00–05:00 ($0.08/kWh) and discharge during 17:00–21:00 peak ($0.31/kWh)."
+    }
+  ],
+  "optimalSchedule": [],
+  "alerts": []
+}
+```

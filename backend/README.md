@@ -53,70 +53,13 @@ Endpoints:
 
 Tunables: `HEALTH_YELLOW_AFTER_MS`, `HEALTH_RED_AFTER_MS`, `HEARTBEAT_INTERVAL_MS`.
 
-## Automated Credit Scoring (#1003)
+## Grid stability and meter geofencing (#1016/#1017)
 
-A deterministic (non-ML), explainable 0-1000 credit score per Stellar
-address, built from two existing data sources rather than a new ledger:
+Frequency telemetry can be published by meters on `solargrid/meters/{meterId}/frequency` with `{ "frequencyHz": 49.8, "loadKw": 2.4 }`. The bridge applies the 50 Hz threshold response and sends a relay command without routing the message through billing. HTTP equivalents are `POST /api/grid-services/frequency/readings`, `POST /api/grid-services/frequency/contributions`, and `GET /api/grid-services/frequency/:meterId/summary`.
 
-- **Activity** — `lib/revenueStore.ts` (#1002): count and lifetime volume of
-  successful payments by that address.
-- **Delays / defaults** — `lib/billing.ts` (#902) bills, joined to an
-  address via the billing account's `stellar_address` field (the closest
-  existing "which meters does this user pay for" mapping). Each bill is
-  classified against its `due_at`:
-  - paid at/before `due_at` → **on-time**
-  - paid after `due_at`, or unpaid and past `due_at` → **late**
-  - unpaid and past `due_at + CREDIT_DEFAULT_GRACE_DAYS` (default 30 days) → **default**
-  - unpaid but not yet due → ignored (nothing to judge yet)
+GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/meters/{meterId}/location`. The backend compares the report with the registered haversine geofence and records a `LocationVerificationFailed` result when it is outside the permitted radius. Out-of-fence meters are automatically disabled for fraud review.
 
-### Scoring formula
-
-```
-score = 300                                   (base)
-      + 500 × reliabilityRatio                (on-time share of judged bills; 0.5 if no bills yet)
-      + 150 × min(1, lifetimeVolumeXLM / 500)  (volume factor, caps at 500 XLM paid)
-      + 100 × min(1, accountAgeDays / 365)     (tenure factor, caps at 1 year)
-      -  15 × lateCount
-      -  60 × defaultCount
-      clamped to [0, 1000]
-```
-
-### Tiers
-
-| Score range | Tier       |
-|-------------|------------|
-| 850-1000    | Excellent  |
-| 700-849     | Good       |
-| 500-699     | Fair       |
-| 300-499     | Poor       |
-| 0-299       | Very Poor  |
-
-### Payment plan recommendation & credit limit
-
-| Score     | Recommended plan |
-|-----------|-------------------|
-| 0-499     | Daily             |
-| 500-749   | Weekly            |
-| 750-1000  | Monthly           |
-
-Credit limit scales linearly with score up to a 5,000 XLM cap:
-`creditLimitStroops = round(score / 1000 × 50,000,000,000)`.
-
-### Endpoints
-
-- `GET /api/users/:address/credit-score` — computed score, tier, factors,
-  recommended payment plan and credit limit, plus any active admin override.
-- `POST /api/users/:address/credit-score/override` — admin only
-  (`X-Admin-Key` or a bearer admin JWT). Body: `{ score?, credit_limit_stroops?, reason, expires_at? }`.
-  At least one of `score` / `credit_limit_stroops` is required. While active
-  (not expired), the override's score/limit take precedence over the
-  computed values in the GET response; the computed result is still returned
-  under `computed` for comparison.
-- `DELETE /api/users/:address/credit-score/override` — admin only; clears a
-  stored override.
-
-### Tests
-
-The scoring formula, tier thresholds, payment-plan/credit-limit thresholds,
-and admin-override precedence/expiry are covered by
-`src/lib/creditScoring.test.ts`.
+- `POST /api/grid-services/geofences` — register the expected location and radius
+- `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
+- `GET /api/grid-services/geofences/:meterId` — status and verification history
+- `GET /api/grid-services/geofences` — data for the frontend map

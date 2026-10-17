@@ -143,6 +143,114 @@ charged to the meter owner so the full cost is always collected.
 
 Emitted when a co-payer is added to a meter via `add_meter_share_holder`.
 
+## Family/Household Account Sharing (Issue #981)
+
+Meter owners can delegate access to their meter account so family members can
+operate it from their own wallets. Delegation is role-based: each delegate is
+granted a permission bitmask and an optional expiry.
+
+### `Delegate` struct
+
+| Field               | Type      | Description                                                        |
+|---------------------|-----------|--------------------------------------------------------------------|
+| `delegated_address` | `Address` | Wallet granted access to the meter                               |
+| `permissions`       | `u32`     | Bitmask of granted permissions (see below)                       |
+| `expiry`            | `u64`     | Unix timestamp after which the delegation is invalid (`0` = never) |
+
+Permission bits:
+
+| Bit | Constant    | Meaning                                                       |
+|-----|-------------|---------------------------------------------------------------|
+| 0   | `PERM_VIEW` | Read-only access to meter state, usage and billing history    |
+| 1   | `PERM_PAY`  | May top up the meter balance (`make_payment`)                 |
+| 2   | `PERM_ADMIN`| Full administrative control over the meter (excluding transfer)|
+
+### `add_delegate(meter_id: String, delegated_address: Address, permissions: u32, expiry: u64)`
+
+Owner-only (or admin). Registers or replaces the delegation entry for
+`delegated_address` on `meter_id`. Requires authorization from the meter owner.
+Rejects unknown meters, zero permission masks, and expiry timestamps in the
+past. Emits `DelegateAdded`.
+
+### `remove_delegate(meter_id: String, delegated_address: Address)`
+
+Owner-only (or admin). Removes the delegation entry for `delegated_address`.
+Requires authorization from the meter owner. Emits `DelegateRemoved`.
+
+### `get_delegates(meter_id: String) -> Vec<Delegate>`
+
+Returns all active (non-expired) delegations registered for the meter. Returns
+an empty vector for meters with no delegates.
+
+### Permission checks
+
+`check_delegate_permission(meter_id: String, caller: Address, required: u32) -> bool`
+returns `true` when `caller` is the meter owner, the admin, or a delegate whose
+entry has not expired and whose `permissions` mask contains all bits in
+`required`. Operations such as `make_payment` and admin-only meter mutations
+call this helper before proceeding.
+
+#### delegate_added
+- **Topic 0:** `dlg_add` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `meter_id` (String)
+- **Data:** `(delegated_address: Address, permissions: u32, expiry: u64)`
+
+Emitted when a delegation is created or updated via `add_delegate`.
+
+#### delegate_removed
+- **Topic 0:** `dlg_rmv` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `meter_id` (String)
+- **Data:** `(delegated_address: Address)`
+
+Emitted when a delegation is removed via `remove_delegate`.
+
+## Seasonal Pricing (Issue #992)
+
+Fixed pricing is replaced by date-driven seasonal rates so tariffs track
+seasonal energy demand. Seasons are configured by the admin and applied
+automatically during cost computation.
+
+### `SeasonalRate` struct
+
+| Field        | Type     | Description                                                       |
+|--------------|----------|-------------------------------------------------------------------|
+| `season`     | `Symbol` | Season identifier (e.g. `summer`, `winter`)                       |
+| `start_date` | `u64`    | Unix timestamp at which the season begins (inclusive)             |
+| `end_date`   | `u64`    | Unix timestamp at which the season ends (exclusive)               |
+| `multiplier` | `u32`    | Rate multiplier in basis points (`10000` = 1.0x base rate)        |
+
+### `set_seasonal_rates(rates: Vec<SeasonalRate>)`
+
+Admin-only. Replaces the configured seasonal rate table. Rejects empty input,
+overlapping or inverted `[start_date, end_date)` ranges, and zero multipliers.
+Emits `SeasonalRateApplied` for the season that is active at the time of the
+call.
+
+### Automatic rate application
+
+Cost computation (`apply_usage`, `batch_update_usage`, and the payment paths)
+resolves the current season from the ledger timestamp and scales the base rate
+by the matching `multiplier / 10000`. When no season matches the current date,
+the base rate is used unchanged.
+
+### Views
+
+- `get_current_season() -> Option<SeasonalRate>` — the season active at the
+  current ledger timestamp, or `None` when no season matches.
+- `get_seasonal_rates() -> Vec<SeasonalRate>` — the full configured rate table,
+  for historical seasonal comparison in the frontend.
+
+#### seasonal_rate_applied
+- **Topic 0:** `ssn_appl` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `season` (Symbol)
+- **Data:** `(start_date: u64, end_date: u64, multiplier: u32, applied_at: u64)`
+
+Emitted when a seasonal rate is configured via `set_seasonal_rates` and when a
+seasonal rate is applied during cost computation.
+
 ## Backend Event Listener
 
 The backend can subscribe to these events via the Stellar RPC `getEvents` endpoint:
@@ -172,6 +280,8 @@ All event emissions are covered by unit tests:
 - `test_emergency_withdraw_announce_then_execute_after_timelock`, `test_emergency_withdraw_requires_frozen`, `test_emergency_withdraw_capped_at_total_revenue`, `test_emergency_withdraw_capped_at_current_balance_if_lower`, `test_cancel_emergency_withdrawal`, `test_emergency_withdraw_reannounce_restarts_timelock` (issue #686)
 - `test_admin_create_and_get_discount`, `test_make_payment_with_discount_applies_percent_off`, `test_make_payment_with_discount_respects_max_uses`, `test_make_payment_with_discount_respects_expiry`, `test_admin_revoke_discount` (issue #687)
 - `test_add_meter_share_holder`, `test_add_meter_share_holder_rejects_over_100_percent`, `test_get_meter_shareholders`, `test_apply_usage_splits_cost_proportionally`, `test_apply_usage_share_holder_shortfall_charged_to_owner` (issue #851)
+- `test_add_delegate`, `test_add_delegate_replaces_existing`, `test_add_delegate_rejects_zero_permissions`, `test_add_delegate_rejects_past_expiry`, `test_remove_delegate`, `test_get_delegates_excludes_expired`, `test_check_delegate_permission_view_pay_admin`, `test_delegate_can_make_payment`, `test_delegate_without_pay_permission_rejected`, `test_delegate_events_emitted` (issue #981)
+- `test_set_seasonal_rates`, `test_set_seasonal_rates_rejects_overlap`, `test_set_seasonal_rates_rejects_inverted_range`, `test_set_seasonal_rates_rejects_zero_multiplier`, `test_get_current_season`, `test_get_current_season_none_when_no_match`, `test_apply_usage_applies_seasonal_multiplier`, `test_apply_usage_uses_base_rate_outside_seasons`, `test_seasonal_rate_applied_event_emitted` (issue #992)
 
 **Note:** the crate's test module currently fails to compile on `main` for reasons unrelated to these two features (many pre-existing tests pass a `Symbol` where the `meter_id: String` parameters now expect a `String`, plus a `ContractEvents::iter` API drift) — `cargo test` cannot run for this crate until that's fixed. The new code above was verified with `cargo check` (library) and `cargo build --target wasm32v1-none --release` (both clean), and its own test functions were confirmed to produce zero compiler errors by cross-referencing `cargo check --tests` output against their line ranges.
 
@@ -265,6 +375,112 @@ Events (`solar`, …): `stk_cfg`, `stk_fund`, `staked`, `unstk_req`, `unstaked`,
 New errors: `StakingNotConfigured` (38), `InsufficientStake` (39),
 `NoPendingUnstake` (40), `CooldownNotElapsed` (41).
 
+## Community Solar Farms (#984)
+
+Users without rooftop space can buy shares in a community solar farm and receive
+credits proportional to the farm's generation. Implemented in
+`solar_grid/src/solar_farm.rs`.
+
+### `SolarFarm` struct
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `u64` | Sequential farm id (0-based) |
+| `name` | `String` | Human-readable farm name |
+| `capacity_watts` | `u64` | Installed capacity in watts |
+| `share_price` | `i128` | Price per share in the payment token |
+| `total_shares` | `u64` | Total shares issued so far |
+| `shareholders` | `Vec<(Address, u64)>` | `(investor, shares)` pairs, in purchase order |
+| `generation_data` | `Vec<GenerationRecord>` | Per-period generation readings |
+| `total_generation` | `u64` | Cumulative generation in Wh across all periods |
+| `active` | `bool` | Whether shares can still be purchased |
+
+`GenerationRecord` holds `period_start`, `period_end`, and `energy_wh`.
+
+### `buy_solar_share(buyer, farm_id, shares)`
+
+Requires authorization from `buyer`. Transfers `shares * share_price` of the
+configured payment token from `buyer` to the contract, then credits `shares` to
+the buyer's position in `shareholders` (creating the entry on first purchase).
+Rejects `shares == 0`, unknown or inactive farms, and insufficient token balance
+or allowance. Emits `SharePurchased`.
+
+### `distribute_generation_credits(farm_id, energy_wh, period_start, period_end)`
+
+Admin-only (requires the administrator's authorization). Appends a
+`GenerationRecord` to `generation_data`, adds `energy_wh` to `total_generation`,
+and allocates credits **proportionally** to each shareholder:
+
+```
+credit_i = energy_wh * shares_i / total_shares
+```
+
+Integer division truncates, so the sum of allocated credits may be less than
+`energy_wh`; the remainder is retained by the contract. Shareholders with zero
+shares receive nothing. Rejects unknown farms, empty shareholder sets, and
+periods that end before they start. Emits `CreditsDistributed`.
+
+### Views
+
+`get_solar_farm(farm_id)`, `get_solar_farms(offset, limit)` (limit capped at
+100), `get_farm_shareholders(farm_id)`, `get_farm_generation(farm_id)`, and
+`get_shareholder_credits(farm_id, investor)`.
+
+### Events
+
+#### SharePurchased
+- **Topic 0:** `shr_buy` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `farm_id` (u64)
+- **Data:** `(buyer: Address, shares: u64, amount_paid: i128)`
+
+Emitted by `buy_solar_share` for every successful purchase.
+
+#### CreditsDistributed
+- **Topic 0:** `crd_dist` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `farm_id` (u64)
+- **Data:** `(energy_wh: u64, total_generation: u64, period_start: u64, period_end: u64)`
+
+Emitted by `distribute_generation_credits` once per distribution.
+
+### New errors
+
+| Variant | Code | Raised when |
+|---|---|---|
+| `SolarFarmNotFound` | 60 | Farm id does not exist |
+| `SolarFarmInactive` | 61 | Farm is not accepting purchases |
+| `InvalidShareAmount` | 62 | `shares == 0` |
+| `NoShareholders` | 63 | Distribution attempted with no shareholders |
+| `InvalidGenerationPeriod` | 64 | `period_end < period_start` |
+
+### Usage example
+
+```rust
+// Admin registers a farm and funds it with a payment token.
+let farm_id = client.create_solar_farm(&admin, &name, &capacity_watts, &share_price);
+
+// A user without rooftop space buys 10 shares.
+client.buy_solar_share(&buyer, &farm_id, &10);
+
+// Admin reports a generation period; credits are split pro-rata.
+client.distribute_generation_credits(&admin, &farm_id, &energy_wh, &start, &end);
+
+// The buyer checks their accrued credits.
+let credits = client.get_shareholder_credits(&farm_id, &buyer);
+```
+
+### Tests
+
+Share management is covered by `test_create_solar_farm`,
+`test_buy_solar_share_updates_shareholders`,
+`test_buy_solar_share_rejects_zero_shares`,
+`test_buy_solar_share_rejects_inactive_farm`,
+`test_distribute_generation_credits_proportional`,
+`test_distribute_generation_credits_tracks_total_generation`,
+`test_distribute_generation_credits_rejects_no_shareholders`, and
+`test_buy_solar_share_emits_event` (issue #984).
+
 ## Energy Export Certificates (#871)
 
 Non-fungible certificates attesting that a meter exported renewable energy to
@@ -297,38 +513,20 @@ period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
 New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
 `CertificatePeriodOverlap` (52), `CertificateRetired` (53).
 
-## Scheduled Energy Usage (#1001)
+## Energy credit gifting and subscription boxes (Issues #1018 and #1019)
 
-A weekly on/off schedule per circuit (a sub-load of a meter, identified by an
-arbitrary `circuit_id` string — the device id the backend's device registry
-and frontend already use to address it). Implemented in
-`solar_grid/src/scheduling.rs`.
+`gift_energy_credit(sender_meter_id, recipient_meter_id, amount, message)` moves
+prepaid credits between registered meters after the sender owner authorizes. It
+rejects non-positive amounts, insufficient balances, unknown meters, and overly
+long messages. It emits `EnergyGifted(sender, recipient, amount)` and
+`get_gift_history(owner)` exposes the sender's history.
 
-`Schedule`: `circuit_id`, `days` (bitmask, bit 0 = Sunday .. bit 6 = Saturday),
-`start_time`/`end_time` (minute-of-day, 0..1440, UTC — `start_time >
-end_time` is a window spanning midnight, e.g. 22:00 → 06:00), `enabled`.
-
-| Function | Description |
-|---|---|
-| `set_circuit_schedule(meter_id, schedule)` | Meter owner must authorize. Creates or replaces the schedule for `schedule.circuit_id` |
-| `get_circuit_schedule(meter_id, circuit_id) -> Schedule` | `ScheduleNotFound` if unset |
-| `clear_circuit_schedule(meter_id, circuit_id)` | Owner must authorize |
-| `override_circuit(meter_id, circuit_id, forced_state, until)` | Owner must authorize. Forces the circuit on/off until the ledger timestamp `until` (must be in the future), superseding its schedule — e.g. for an emergency. Lapses automatically; no call needed to end it |
-| `clear_circuit_override(meter_id, circuit_id)` | Owner must authorize. Ends an active override early so the schedule resumes immediately |
-| `get_circuit_override(meter_id, circuit_id) -> Option<CircuitOverride>` | `CircuitOverride`: `forced_state`, `until`, `set_by` |
-| `circuit_should_be_on(meter_id, circuit_id, now) -> bool` | Read-only. An unexpired override wins; otherwise the weekly schedule decides |
-| `execute_scheduled_action(meter_id, circuit_id, now, last_state) -> bool` | IoT entrypoint (no auth required). Evaluates the due state at `now` and, if it differs from `last_state`, publishes `ScheduledActionExecuted`. Always returns the desired state |
-
-The backend's `startScheduleExecutor` (`backend/src/iot/scheduleExecutor.ts`)
-polls every meter-linked device once a minute, calls
-`circuit_should_be_on`/`execute_scheduled_action`, and relays the resulting
-ON/OFF command to the meter the same way contract-driven
-activate/deactivate events do.
-
-Events (`solar`, …, `meter_id`): `sch_set` `(circuit_id)`, `sch_ovr`
-`(circuit_id, forced_state, until)`, `sch_exec` `(circuit_id, desired_state,
-now)` — the `ScheduledActionExecuted` event, published only on a state
-transition.
-
-New errors: `ScheduleNotFound` (73), `InvalidSchedule` (74),
-`InvalidOverrideWindow` (75).
+Subscription boxes are configured with
+`create_subscription_tier(name, price, included_kwh, rollover_limit)`. Users
+enroll with `subscribe(owner, tier_id)` and can use
+`upgrade_subscription`, `downgrade_subscription`, and `renew_subscription`.
+Renewal deducts the tier price from the owner's first registered meter balance,
+adds the included kWh, and carries unused kWh forward up to the tier's
+`rollover_limit`. `SubscriptionRenewed(owner, tier_id, price)` is emitted for
+enrollment, changes, and monthly renewal. `consume_subscription_kwh` is the
+usage-accounting hook used by the billing integration.

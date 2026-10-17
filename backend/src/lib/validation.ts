@@ -116,48 +116,50 @@ export const SmsPaymentWebhookSchema = z
   })
   .strict();
 
-export const AddEmergencyContactSchema = z
-  .object({
-    user_address: z
-      .string()
-      .regex(STELLAR_ADDRESS_REGEX, "Invalid user_address format"),
-    name: z.string().trim().min(1, "name is required").max(120, "name must be at most 120 characters"),
-    phone: z.string().trim().min(3).max(32).optional(),
-    email: z.string().trim().email("Invalid email format").max(254).optional(),
-    relationship: z.string().trim().max(60).optional(),
-    notify_on_tamper: z.boolean().optional(),
-    notify_on_outage: z.boolean().optional(),
-  })
-  .strict()
-  .refine((data) => Boolean(data.phone) || Boolean(data.email), {
-    message: "At least one of phone or email is required",
-  });
+/** Locales supported by the voice assistant integration (issue #989). */
+export const VOICE_SUPPORTED_LOCALES = [
+  "en-US",
+  "en-GB",
+  "es-ES",
+  "fr-FR",
+  "pt-BR",
+  "sw-KE",
+] as const;
 
-export const ListEmergencyContactsQuerySchema = z
+export const VoiceLocaleSchema = z.enum(VOICE_SUPPORTED_LOCALES);
+
+export const VoiceParseSchema = z
   .object({
-    user_address: z
+    text: z
       .string()
-      .regex(STELLAR_ADDRESS_REGEX, "Invalid user_address format"),
+      .trim()
+      .min(1, "text is required")
+      .max(500, "text must be at most 500 characters"),
+    locale: VoiceLocaleSchema,
   })
   .strict();
 
-export const CreditScoreAddressParamsSchema = z
+export const VoicePaymentConfirmSchema = z
   .object({
-    address: z.string().regex(STELLAR_ADDRESS_REGEX, "Invalid address format"),
+    token: z
+      .string()
+      .trim()
+      .regex(/^[0-9a-fA-F]+$/, "token must be a hexadecimal string")
+      .min(32, "token must be at least 32 characters")
+      .max(128, "token must be at most 128 characters"),
+    pin: z
+      .string()
+      .trim()
+      .min(4, "pin must be at least 4 characters")
+      .max(10, "pin must be at most 10 characters"),
   })
   .strict();
 
-export const CreditScoreOverrideSchema = z
+export const VoicePaymentCancelSchema = z
   .object({
-    score: z.number().int().min(0).max(1000).optional(),
-    credit_limit_stroops: z.number().int().min(0).optional(),
-    reason: z.string().trim().min(1, "reason is required").max(500),
-    expires_at: z.string().datetime().optional(),
+    token: z.string().trim().min(1, "token is required"),
   })
-  .strict()
-  .refine((data) => data.score !== undefined || data.credit_limit_stroops !== undefined, {
-    message: "At least one of score or credit_limit_stroops is required",
-  });
+  .strict();
 
 type RequestSchemaSet = {
   body?: ZodTypeAny;
@@ -214,4 +216,6 @@ export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
 export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;
-export type AddEmergencyContactInput = z.infer<typeof AddEmergencyContactSchema>;
+export type VoiceParseInput = z.infer<typeof VoiceParseSchema>;
+export type VoicePaymentConfirmInput = z.infer<typeof VoicePaymentConfirmSchema>;
+export type VoicePaymentCancelInput = z.infer<typeof VoicePaymentCancelSchema>;

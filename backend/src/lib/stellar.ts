@@ -238,7 +238,20 @@ export class StellarService {
     });
   }
 
+  /**
+   * #990 — Record a grid export on-chain, crediting the meter owner based on
+   * the admin-configured export rate. Invokes the contract's
+   * `record_grid_export` entrypoint and returns the transaction hash.
+   */
+  async recordGridExportOnChain(meterId: string, kwh: number): Promise<string> {
+    return this.invoke("record_grid_export", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+      StellarSdk.nativeToScVal(BigInt(kwh), { type: "u64" }),
+    ]);
+  }
+
   private rememberQueryResult(key: string, value: unknown): void {
+=======
     if (this.queryCache.size >= QUERY_CACHE_MAX_ENTRIES && !this.queryCache.has(key)) {
       const oldestKey = this.queryCache.keys().next().value;
       if (oldestKey !== undefined) this.queryCache.delete(oldestKey);
@@ -303,3 +316,4 @@ export const CONTRACT_ID = stellarService.contractId;
 export const server = stellarService.server;
 export const adminInvoke = stellarService.invoke.bind(stellarService);
 export const contractQuery = stellarService.query.bind(stellarService);
+export const recordGridExportOnChain = stellarService.recordGridExportOnChain.bind(stellarService);

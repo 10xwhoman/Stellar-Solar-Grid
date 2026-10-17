@@ -70,3 +70,56 @@ export async function smartHomeFetch<T>(token: string, path: string, init: Reque
   }
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
+
+export type VoiceIntent = "check_balance" | "check_usage" | "make_payment" | "cancel_payment" | "unknown";
+
+export type VoiceParseResult = {
+  intent: VoiceIntent;
+  slots: Record<string, string>;
+  confidence: number;
+  locale: string;
+};
+
+export type VoicePaymentConfirmation = {
+  hash: string;
+  meterId: string;
+  amountStroops: string;
+};
+
+async function voiceFetch<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${API}/api/voice${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+  });
+  if (res.status === 401) clearSmartHomeSession();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Request failed (${res.status})`);
+  }
+  return (res.status === 204 ? undefined : await res.json()) as T;
+}
+
+export async function parseVoiceCommand(token: string, text: string, locale: string): Promise<VoiceParseResult> {
+  return voiceFetch<VoiceParseResult>(token, "/parse", {
+    method: "POST",
+    body: JSON.stringify({ text, locale }),
+  });
+}
+
+export async function confirmVoicePayment(
+  token: string,
+  confirmationToken: string,
+  pin: string,
+): Promise<VoicePaymentConfirmation> {
+  return voiceFetch<VoicePaymentConfirmation>(token, "/payment/confirm", {
+    method: "POST",
+    body: JSON.stringify({ confirmationToken, pin }),
+  });
+}
+
+export async function cancelVoicePayment(token: string, confirmationToken: string): Promise<void> {
+  return voiceFetch<void>(token, "/payment/cancel", {
+    method: "POST",
+    body: JSON.stringify({ confirmationToken }),
+  });
+}

@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
 import { sendEmail, type EmailAttachment, type EmailResult } from "./mailer.js";
 
-export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing"] as const;
+export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing", "surveys"] as const;
 export type EmailEvent = (typeof EMAIL_EVENTS)[number];
 
 const DB_PATH = process.env.EMAIL_PREFERENCES_DB_PATH ?? path.resolve(process.cwd(), "data", "email-preferences.sqlite");
@@ -88,5 +88,23 @@ export async function sendNotificationEmail(input: {
     text: `${input.text}\n\nEmail preferences: ${preferencesUrl}\nUnsubscribe: ${unsubscribeUrl}`,
     html: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:24px;font-family:Arial,sans-serif;color:#222"><main style="max-width:600px;margin:0 auto;line-height:1.5">${input.html}<hr><p><a href="${preferencesUrl}">Email preferences</a> | <a href="${unsubscribeUrl}">Unsubscribe</a></p></main></body></html>`,
     attachments: input.attachments,
+  });
+}
+
+export async function sendSurveyEmail(input: {
+  to: string;
+  surveyId: string;
+  surveyTitle: string;
+  question: string;
+  responseUrl: string;
+}): Promise<EmailResult> {
+  const title = input.surveyTitle.trim() || "Customer Satisfaction Survey";
+  const question = input.question.trim();
+  return sendNotificationEmail({
+    to: input.to,
+    event: "surveys",
+    subject: `We'd love your feedback: ${title}`,
+    text: `Hi,\n\nWe'd love to hear about your experience.\n\n${title}\n${question}\n\nShare your feedback: ${input.responseUrl}\n\nThank you for helping us improve.`,
+    html: `<h2>${title}</h2><p>We'd love to hear about your experience.</p><p>${question}</p><p><a href="${input.responseUrl}" style="display:inline-block;padding:12px 20px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Share your feedback</a></p><p>Thank you for helping us improve.</p>`,
   });
 }

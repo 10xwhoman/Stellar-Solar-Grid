@@ -26,6 +26,8 @@ import { createTextPdf } from "./pdf.js";
 import { sendNotificationEmail } from "./emailNotifications.js";
 import { logger } from "./logger.js";
 import { getMemberDiscountPercent } from "./communities.js";
+import { stellarService } from "./stellarService.js";
+import { adminInvoke } from "./adminInvoke.js";
 
 const DB_PATH = process.env.BILLING_DB_PATH ?? path.resolve(process.cwd(), "data", "billing.sqlite");
 const PDF_DIR = process.env.BILLING_PDF_DIR ?? path.resolve(process.cwd(), "data", "bills");
@@ -593,4 +595,123 @@ export function startBillingScheduler(): void {
 export function stopBillingScheduler(): void {
   if (schedulerTimer) clearInterval(schedulerTimer);
   schedulerTimer = undefined;
+}
+
+// ── Installment plans (#987) ─────────────────────────────────────────────────
+
+export type InstallmentScheduleEntry = {
+  index: number;
+  due_at: string;
+  amount: number;
+  paid_at: string | null;
+  tx_hash: string | null;
+};
+
+export type InstallmentPlan = {
+  id: string;
+  meter_id: string;
+  payer: string;
+  total: number;
+  paid: number;
+  remaining: number;
+  installments: number;
+  grace_secs: number;
+  next_due: string;
+  schedule: InstallmentScheduleEntry[];
+  status: "active" | "completed" | "defaulted";
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateInstallmentPlanInput = {
+  meterId: string;
+  payer: string;
+  total: number;
+  installments: number;
+  graceSecs?: number;
+};
+
+/** Fetch a single installment plan from the contract. */
+export async function getInstallmentPlan(planId: string): Promise<InstallmentPlan | undefined> {
+  const plan = await stellarService.getInstallmentPlan(planId);
+  return (plan as InstallmentPlan | undefined) ?? undefined;
+}
+
+/** List all installment plans belonging to a payer. */
+export async function listPayerInstallments(payer: string): Promise<InstallmentPlan[]> {
+  const plans = await stellarService.listPayerInstallments(payer);
+  return (plans as InstallmentPlan[]) ?? [];
+}
+
+/** Create a new installment plan on-chain for a meter purchase or upgrade. */
+export async function createInstallmentPlan(input: CreateInstallmentPlanInput): Promise<InstallmentPlan> {
+  const plan = await adminInvoke("create_installment_plan", {
+    meter_id: input.meterId,
+    payer: input.payer,
+    total: input.total,
+    installments: input.installments,
+    grace_secs: input.graceSecs ?? Number(process.env.INSTALLMENT_GRACE_SECS ?? 3 * 86_400),
+  });
+  return plan as InstallmentPlan;
+}
+
+/**
+ * Process the given plans, deducting any installment that is due (and past
+ * its grace period) from the payer's balance. Returns the updated plans.
+ */
+export async function processDueInstallments(planIds: string[]): Promise<InstallmentPlan[]> {
+  if (planIds.length === 0) return [];
+  const result = await adminInvoke("process_due_installments", { plan_ids: planIds });
+  return (result as InstallmentPlan[]) ?? [];
+}
+
+const INSTALLMENT_SCHEDULER_INTERVAL_MS = Number(
+  process.env.INSTALLMENT_SCHEDULER_INTERVAL_MS ?? 60 * 60 * 1000,
+);
+
+let installmentSchedulerTimer: NodeJS.Timeout | undefined;
+let installmentRunning = false;
+
+/**
+ * Checks hourly for active plans whose next installment is due (including the
+ * grace period) and asks the contract to process them. Mirrors the billing
+ * scheduler: safe to run repeatedly, and unref'd so it never blocks shutdown.
+ */
+export async function installmentTick(now = new Date()): Promise<InstallmentPlan[]> {
+  if (installmentRunning) return [];
+  installmentRunning = true;
+  try {
+    const active = (await stellarService.listActiveInstallmentPlans()) as InstallmentPlan[];
+    const due = (active ?? []).filter((plan) => {
+      if (plan.status !== "active") return false;
+      const dueAt = new Date(plan.next_due).getTime() + (plan.grace_secs ?? 0) * 1000;
+      return Number.isFinite(dueAt) && dueAt <= now.getTime();
+    });
+    if (due.length === 0) return [];
+    const processed = await processDueInstallments(due.map((plan) => plan.id));
+    logger.info("Installment processing complete", { processed: processed.length });
+    return processed;
+  } catch (err) {
+    logger.error("Installment processing failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  } finally {
+    installmentRunning = false;
+  }
+}
+
+export function startInstallmentScheduler(): void {
+  if (installmentSchedulerTimer || process.env.INSTALLMENT_ENABLED === "false") return;
+  void installmentTick();
+  installmentSchedulerTimer = setInterval(
+    () => void installmentTick(),
+    INSTALLMENT_SCHEDULER_INTERVAL_MS,
+  );
+  installmentSchedulerTimer.unref?.();
+}
+
+export function stopInstallmentScheduler(): void {
+  if (installmentSchedulerTimer) clearInterval(installmentSchedulerTimer);
+  installmentSchedulerTimer = undefined;
 }
