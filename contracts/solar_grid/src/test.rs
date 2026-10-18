@@ -485,4 +485,279 @@ mod additional_tests {
         let base = client.compute_cost(&1_000_i128);
         assert_eq!(base, 1_000_i128);
     }
+
+    // ------------------------------------------------------------------
+    // Energy Certificate Authority tests
+    // ------------------------------------------------------------------
+
+    fn cert_setup() -> (Env, SolarGridContractClient<'static>, Address) {
+        let (env, client, admin, _token_address) = setup_with_token();
+        client.init_certificate_authority(&admin);
+        (env, client, admin)
+    }
+
+    fn issue_sample_cert(
+        env: &Env,
+        client: &SolarGridContractClient<'static>,
+        issuer: &Address,
+        generator: &Address,
+        serial: &str,
+        energy: i128,
+    ) -> u64 {
+        let serial_id = String::from_str(env, serial);
+        client.issue_certificate(
+            issuer,
+            generator,
+            &serial_id,
+            &energy,
+            &EnergySource::Solar,
+            &1_700_000_000_u64,
+            &1_700_086_400_u64,
+            &String::from_str(env, "US"),
+            &String::from_str(env, "I-REC"),
+        )
+    }
+
+    #[test]
+    fn test_certificate_issue_and_verify_lifecycle() {
+        let (env, client, admin) = cert_setup();
+        let generator = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_certificate_verifier(&admin, &verifier);
+
+        let cert_id = issue_sample_cert(&env, &client, &admin, &generator, "CERT-0001", 1_000);
+
+        let cert = client.get_certificate(&cert_id).unwrap();
+        assert_eq!(cert.status, CertificateStatus::Pending);
+        assert_eq!(cert.energy_kwh, 1_000);
+        assert_eq!(cert.generator, generator);
+
+        client.verify_certificate(&verifier, &cert_id);
+        let verified = client.get_certificate(&cert_id).unwrap();
+        assert_eq!(verified.status, CertificateStatus::Verified);
+        assert_eq!(verified.verifier, Some(verifier));
+    }
+
+    #[test]
+    fn test_certificate_third_party_verification_requires_registration() {
+        let (env, client, admin) = cert_setup();
+        let generator = Address::generate(&env);
+        let rogue = Address::generate(&env);
+        let cert_id = issue_sample_cert(&env, &client, &admin, &generator, "CERT-0002", 500);
+
+        let result = client.try_verify_certificate(&rogue, &cert_id);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_certificate_standard_compliance_fields() {
+        let (env, client, admin) = cert_setup();
+        let generator = Address::generate(&env);
+        let cert_id = issue_sample_cert(&env, &client, &admin, &generator, "CERT-0003", 750);
+
+        let cert = client.get_certificate(&cert_id).unwrap();
+        assert_eq!(cert.country, String::from_str(&env, "US"));
+        assert_eq!(cert.standard, String::from_str(&env, "I-REC"));
+        assert_eq!(cert.source, EnergySource::Solar);
+        assert!(cert.proof_hash.len() > 0);
+    }
+
+    #[test]
+    fn test_certificate_double_counting_prevented() {
+        let (env, client, admin) = cert_setup();
+        let generator = Address::generate(&env);
+        let serial = String::from_str(&env, "CERT-DUP");
+        client.issue_certificate(
+            &admin,
+            &generator,
+            &serial,
+            &1_000,
+            &EnergySource::Solar,
+            &1_700_000_000_u64,
+            &1_700_086_400_u64,
+            &String::from_str(&env, "US"),
+            &String::from_str(&env, "I-REC"),
+        );
+
+        let result = client.try_issue_certificate(
+            &admin,
+            &generator,
+            &serial,
+            &1_000,
+            &EnergySource::Solar,
+            &1_700_000_000_u64,
+            &1_700_086_400_u64,
+            &String::from_str(&env, "US"),
+            &String::from_str(&env, "I-REC"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_certificate_revocation_blocks_transfer() {
+        let (env, client, admin) = cert_setup();
+        let generator = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let holder = Address::generate(&env);
+        client.add_certificate_verifier(&admin, &verifier);
+
+        let cert_id = issue_sample_cert(&env, &client, &admin, &generator, "CERT-0004", 1_000);
+        client.verify_certificate(&verifier, &cert_id);
+        client.transfer_certificate(&generator, &cert_id, &holder);
+
+        client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "fraud"));
+
+        let cert = client.get_certificate(&cert_id).unwrap();
+        assert_eq!(cert.status, CertificateStatus::Revoked);
+
+        let result = client.try_transfer_certificate(&holder, &cert_id, &generator);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_certificate_revoked_cannot_be_verified() {
+        let (env, client, admin) = cert_setup();
+        let generator = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_certificate_verifier(&admin, &verifier);
+
+        let cert_id = issue_sample_cert(&env, &client, &admin, &generator, "CERT-0005", 1_000);
+        client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "fraud"));
+
+        let result = client.try_verify_certificate(&verifier, &cert_id);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Quantum-resistant cryptography tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_pqc_key_registration() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let user = Address::generate(&env);
+        let pk = soroban_sdk::Bytes::from_array(&env, &[7u8; 32]);
+
+        client.register_pqc_key(&user, &pk, &PqcAlgorithm::Dilithium3);
+        let stored = client.get_pqc_key(&user).unwrap();
+        assert_eq!(stored.algorithm, PqcAlgorithm::Dilithium3);
+        assert_eq!(stored.public_key, pk);
+    }
+
+    #[test]
+    fn test_pqc_dual_signing_migration() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let user = Address::generate(&env);
+        let pk = soroban_sdk::Bytes::from_array(&env, &[3u8; 32]);
+        client.register_pqc_key(&user, &pk, &PqcAlgorithm::Dilithium3);
+
+        // Legacy-only signature still accepted during migration.
+        let legacy = soroban_sdk::Bytes::from_array(&env, &[1u8; 64]);
+        assert!(client.verify_dual_signature(&user, &legacy, &None));
+
+        // PQC signature accepted.
+        let pqc = soroban_sdk::Bytes::from_array(&env, &[2u8; 64]);
+        assert!(client.verify_dual_signature(&user, &legacy, &Some(pqc)));
+    }
+
+    #[test]
+    fn test_pqc_verification_rejects_tampered_signature() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let user = Address::generate(&env);
+        let pk = soroban_sdk::Bytes::from_array(&env, &[9u8; 32]);
+        client.register_pqc_key(&user, &pk, &PqcAlgorithm::Dilithium3);
+
+        let empty = soroban_sdk::Bytes::new(&env);
+        let tampered = soroban_sdk::Bytes::from_array(&env, &[0u8; 64]);
+        assert!(!client.verify_dual_signature(&user, &empty, &Some(tampered)));
+    }
+
+    #[test]
+    fn test_pqc_verification_without_registered_key_fails() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let user = Address::generate(&env);
+        let legacy = soroban_sdk::Bytes::from_array(&env, &[1u8; 64]);
+        let pqc = soroban_sdk::Bytes::from_array(&env, &[2u8; 64]);
+        assert!(!client.verify_dual_signature(&user, &legacy, &Some(pqc)));
+    }
+
+    // ------------------------------------------------------------------
+    // Energy commons governance tests
+    // ------------------------------------------------------------------
+
+    fn commons_setup() -> (Env, SolarGridContractClient<'static>, Address) {
+        let (env, client, admin, _token_address) = setup_with_token();
+        client.init_commons(&admin, &10_000_i128);
+        (env, client, admin)
+    }
+
+    #[test]
+    fn test_commons_boundary_defined() {
+        let (env, client, _admin) = commons_setup();
+        let commons = client.get_commons().unwrap();
+        assert_eq!(commons.total_capacity, 10_000);
+        assert_eq!(commons.allocated, 0);
+    }
+
+    #[test]
+    fn test_commons_member_rule_voting() {
+        let (env, client, admin) = commons_setup();
+        let member_a = Address::generate(&env);
+        let member_b = Address::generate(&env);
+        client.add_commons_member(&admin, &member_a);
+        client.add_commons_member(&admin, &member_b);
+
+        let rule_id = client.propose_commons_rule(&member_a, &String::from_str(&env, "max 2kW"));
+        client.vote_commons_rule(&member_a, &rule_id, &true);
+        client.vote_commons_rule(&member_b, &rule_id, &true);
+
+        let rule = client.get_commons_rule(&rule_id).unwrap();
+        assert!(rule.passed);
+    }
+
+    #[test]
+    fn test_commons_monitoring_and_graduated_sanctions() {
+        let (env, client, admin) = commons_setup();
+        let member = Address::generate(&env);
+        client.add_commons_member(&admin, &member);
+
+        let first = client.report_commons_violation(&admin, &member);
+        assert_eq!(first, SanctionLevel::Warning);
+
+        let second = client.report_commons_violation(&admin, &member);
+        assert_eq!(second, SanctionLevel::Restricted);
+
+        let third = client.report_commons_violation(&admin, &member);
+        assert_eq!(third, SanctionLevel::Suspended);
+    }
+
+    #[test]
+    fn test_commons_conflict_resolution() {
+        let (env, client, admin) = commons_setup();
+        let member_a = Address::generate(&env);
+        let member_b = Address::generate(&env);
+        client.add_commons_member(&admin, &member_a);
+        client.add_commons_member(&admin, &member_b);
+
+        let conflict_id = client.open_commons_conflict(&member_a, &member_b);
+        client.resolve_commons_conflict(&admin, &conflict_id, &member_a);
+
+        let conflict = client.get_commons_conflict(&conflict_id).unwrap();
+        assert!(conflict.resolved);
+        assert_eq!(conflict.resolution, Some(member_a));
+    }
+
+    #[test]
+    fn test_commons_allocation_within_boundary() {
+        let (env, client, admin) = commons_setup();
+        let member = Address::generate(&env);
+        client.add_commons_member(&admin, &member);
+
+        client.allocate_commons(&admin, &member, &4_000_i128);
+        let commons = client.get_commons().unwrap();
+        assert_eq!(commons.allocated, 4_000);
+
+        let result = client.try_allocate_commons(&admin, &member, &7_000_i128);
+        assert!(result.is_err());
+    }
 }

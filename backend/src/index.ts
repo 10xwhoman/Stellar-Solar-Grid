@@ -399,3 +399,15 @@ app.use("/api/providers", providersBrandingRouter);
 import { transactionsRouter } from "./routes/transactions.js";
 app.use("/api/transactions", transactionsRouter);
 
+// #1065: Energy Certificate Authority
+import { energyCertificatesRouter } from "./routes/energyCertificates.js";
+app.use("/api/energy-certificates", writeLimiter, energyCertificatesRouter);
+
+// #1066: Meter Behavioral Economics Nudges
+import { nudgesRouter } from "./routes/nudges.js";
+app.use("/api/nudges", nudgesRouter);
+
+// #1068: Energy Commons Management
+import { commonsRouter } from "./routes/commons.js";
+app.use("/api/commons", writeLimiter, commonsRouter);
+
