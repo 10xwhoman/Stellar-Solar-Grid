@@ -250,6 +250,93 @@ export class StellarService {
     ]);
   }
 
+  /**
+   * #1070 — Record a payment event in the reputation contract so it can be
+   * folded into the caller's credit score. `onTime` reflects whether the
+   * payment was made by its due date; `amount` is the payment amount in the
+   * contract's base unit. Returns the transaction hash.
+   */
+  async recordPaymentReputation(
+    address: string,
+    amount: bigint,
+    onTime: boolean,
+    timestampMs: number,
+  ): Promise<string> {
+    return this.invoke("record_payment", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+      StellarSdk.nativeToScVal(amount, { type: "i128" }),
+      StellarSdk.nativeToScVal(onTime, { type: "bool" }),
+      StellarSdk.nativeToScVal(BigInt(timestampMs), { type: "u64" }),
+    ]);
+  }
+
+  /**
+   * #1070 — Fetch the reputation score (0-100) for an address from the
+   * reputation contract. Returns `null` when the contract has no score for
+   * the address yet.
+   */
+  async getReputationScore(address: string): Promise<number | null> {
+    const retval = await this.query("get_reputation_score", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      const score = Number(decoded);
+      return Number.isFinite(score) ? score : null;
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode reputation score: ${err?.message ?? String(err)}`));
+    }
+  }
+
+  /**
+   * #1070 — Associate a DID (Decentralized Identifier) with an address in the
+   * reputation contract. Returns the transaction hash.
+   */
+  async setDid(address: string, did: string): Promise<string> {
+    return this.invoke("set_did", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+      StellarSdk.nativeToScVal(did, { type: "string" }),
+    ]);
+  }
+
+  /**
+   * #1070 — Resolve the DID currently bound to an address, or `null` when no
+   * DID has been set.
+   */
+  async getDid(address: string): Promise<string | null> {
+    const retval = await this.query("get_did", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      return String(decoded);
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode DID: ${err?.message ?? String(err)}`));
+    }
+  }
+
+  /**
+   * #1070 — Resolve an address from a DID via the reputation contract, or
+   * `null` when the DID is unknown.
+   */
+  async resolveDid(did: string): Promise<string | null> {
+    const retval = await this.query("resolve_did", [
+      StellarSdk.nativeToScVal(did, { type: "string" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      return String(decoded);
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode DID resolution: ${err?.message ?? String(err)}`));
+    }
+  }
+
   private rememberQueryResult(key: string, value: unknown): void {
 =======
     if (this.queryCache.size >= QUERY_CACHE_MAX_ENTRIES && !this.queryCache.has(key)) {
@@ -317,3 +404,8 @@ export const server = stellarService.server;
 export const adminInvoke = stellarService.invoke.bind(stellarService);
 export const contractQuery = stellarService.query.bind(stellarService);
 export const recordGridExportOnChain = stellarService.recordGridExportOnChain.bind(stellarService);
+export const recordPaymentReputation = stellarService.recordPaymentReputation.bind(stellarService);
+export const getReputationScore = stellarService.getReputationScore.bind(stellarService);
+export const setDid = stellarService.setDid.bind(stellarService);
+export const getDid = stellarService.getDid.bind(stellarService);
+export const resolveDid = stellarService.resolveDid.bind(stellarService);
