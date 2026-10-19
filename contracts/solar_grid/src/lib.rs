@@ -145,40 +145,12 @@ pub enum ContractError {
     ComplianceRefMissing = 72,
     /// No lease agreement exists with the supplied id.
     LeaseNotFound = 73,
-    /// No energy certificate exists with the supplied id (#1065).
-    EnergyCertificateNotFound = 74,
-    /// The energy certificate has been revoked (#1065).
-    EnergyCertificateRevoked = 75,
-    /// The energy certificate has already been revoked (#1065).
-    EnergyCertificateAlreadyRevoked = 76,
-    /// The energy certificate period or generation data is invalid (#1065).
-    InvalidEnergyCertificate = 77,
-    /// The caller is not an authorized certificate verifier (#1065).
-    NotAuthorizedVerifier = 78,
-    /// The supplied cryptographic proof does not match the certificate (#1065).
-    CertificateProofMismatch = 79,
-    /// The certificate authority has not been configured (#1065).
-    CertificateAuthorityNotConfigured = 80,
-    /// The requested post-quantum algorithm is unsupported (#1067).
-    UnsupportedPqcAlgorithm = 81,
-    /// No post-quantum key is registered for the address (#1067).
-    PqcKeyNotFound = 82,
-    /// The post-quantum signature failed verification (#1067).
-    InvalidPqcSignature = 83,
-    /// The post-quantum signature exceeds MAX_PQC_SIGNATURE_LEN (#1067).
-    PqcSignatureTooLong = 84,
-    /// The energy commons has not been configured (#1068).
-    CommonsNotConfigured = 85,
-    /// No commons resource exists with the supplied id (#1068).
-    CommonsResourceNotFound = 86,
-    /// The caller is not a member of the energy commons (#1068).
-    NotCommonsMember = 87,
-    /// The commons rule or usage request is invalid (#1068).
-    InvalidCommonsRule = 88,
-    /// The commons member is currently under graduated sanctions (#1068).
-    CommonsSanctioned = 89,
-    /// No commons conflict exists with the supplied id (#1068).
-    CommonsConflictNotFound = 90,
+    /// Reputation entrypoints used before `configure_reputation` (#1070).
+    ReputationNotConfigured = 74,
+    /// No reputation record exists for the supplied address (#1070).
+    ReputationNotFound = 75,
+    /// A DID string is empty or exceeds MAX_DID_LEN (#1070).
+    InvalidDid = 76,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -242,6 +214,31 @@ const MAX_METADATA_VALUE_LEN: u32 = 100;
 const EXPORT_RATE: Symbol = symbol_short!("EXP_RATE");
 /// Maximum page size for `get_export_history` (Issue #990).
 const MAX_EXPORT_PAGE: u32 = 100;
+
+// ── Reputation-based credit scoring (#1070) ──────────────────────────────────
+
+/// Max length (bytes) of a DID string associated with a reputation record.
+const MAX_DID_LEN: u32 = 128;
+/// Retention cap for the on-chain payment-history ring buffer per address.
+/// Only aggregate/hashed inputs are retained so the score can be recomputed
+/// deterministically without exposing individual payment details.
+const MAX_REPUTATION_HISTORY: u32 = 50;
+/// Weight (in basis points of the final score) of on-time payment ratio.
+const REP_WEIGHT_TIMELINESS: u32 = 5_000;
+/// Weight (in basis points) of payment volume relative to the target volume.
+const REP_WEIGHT_VOLUME: u32 = 3_000;
+/// Weight (in basis points) of payment frequency/recency.
+const REP_WEIGHT_ACTIVITY: u32 = 2_000;
+/// Payment volume (stroops) at which the volume component saturates.
+const REP_VOLUME_TARGET: i128 = 100_000_000;
+/// Number of payments at which the activity component saturates.
+const REP_ACTIVITY_TARGET: u32 = 20;
+/// A payment counts as on-time when made within this many seconds of the
+/// previous payment's due date (or of registration for the first payment).
+const REP_ON_TIME_WINDOW_SECS: u64 = 3 * SECONDS_PER_DAY;
+/// Minimum number of recorded payments before a score is considered
+/// meaningful; below this the score is scaled down proportionally.
+const REP_MIN_PAYMENTS: u32 = 3;
 
 /// An announced emergency withdrawal can only be executed once this many
 /// seconds have elapsed since it was announced (#686).
@@ -351,6 +348,61 @@ pub struct OwnershipTransfer {
     pub old_owner: Address,
     pub new_owner: Address,
     pub transferred_at: u64,
+}
+
+/// A single privacy-preserving payment-history entry (#1070).
+///
+/// Individual amounts are not stored verbatim: `amount_bucket` is the amount
+/// rounded down to a coarse power-of-ten bucket, and `payment_hash` is a
+/// commitment to the original payment so a holder can prove inclusion without
+/// revealing the exact amount on-chain.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReputationPayment {
+    /// Ledger timestamp of the payment.
+    pub timestamp: u64,
+    /// Coarse amount bucket (stroops), used for volume scoring.
+    pub amount_bucket: i128,
+    /// Whether the payment was made on time.
+    pub on_time: bool,
+    /// Commitment to the underlying payment (privacy-preserving).
+    pub payment_hash: BytesN<32>,
+}
+
+/// Aggregated, portable reputation record for an address (#1070).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReputationRecord {
+    /// Decentralized identifier associated with the subject, if any.
+    pub did: Option<String>,
+    /// Number of payments recorded (lifetime, may exceed retained history).
+    pub payment_count: u32,
+    /// Number of on-time payments recorded.
+    pub on_time_count: u32,
+    /// Sum of bucketed amounts across all recorded payments.
+    pub total_bucket_volume: i128,
+    /// Timestamp of the most recent payment.
+    pub last_payment_at: u64,
+    /// Timestamp of the first recorded payment.
+    pub first_payment_at: u64,
+    /// Bounded ring buffer of recent payment entries.
+    pub history: Vec<ReputationPayment>,
+}
+
+/// Public, portable view of a reputation score (#1070).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReputationScore {
+    /// Score in the inclusive range 0..=100.
+    pub score: u32,
+    /// Number of payments the score was computed from.
+    pub payment_count: u32,
+    /// Number of on-time payments.
+    pub on_time_count: u32,
+    /// Timestamp at which the score was computed.
+    pub computed_at: u64,
+    /// DID associated with the subject, if any.
+    pub did: Option<String>,
 }
 
 #[contracttype]
@@ -4075,6 +4127,208 @@ impl SolarGridContract {
         env.events().publish((EVT_NS, symbol_short!("inst_date"), meter_id), installed_at); Ok(())
     }
     pub fn get_installed_at(env: Env, meter_id: String) -> Result<u64, ContractError> { Ok(Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?.installed_at) }
+
+    // ── Reputation-based credit scoring (#1070) ──────────────────────────────
+
+    /// Associate a decentralized identifier with `subject`'s reputation
+    /// record, creating the record if needed. The subject must authorize.
+    pub fn set_reputation_did(
+        env: Env,
+        subject: Address,
+        did: String,
+    ) -> Result<(), ContractError> {
+        subject.require_auth();
+        if did.len() == 0 || did.len() > MAX_DID_LEN {
+            return Err(ContractError::InvalidDid);
+        }
+        let key = DataKey::Reputation(subject.clone());
+        let mut record = Self::get_reputation_record_or_default(&env, &key);
+        record.did = Some(did.clone());
+        env.storage().persistent().set(&key, &record);
+        env.events().publish(
+            (EVT_NS, symbol_short!("rep_did"), subject),
+            did,
+        );
+        Ok(())
+    }
+
+    /// Record a payment against `subject`'s reputation history. Callable by
+    /// the oracle (or admin) so that payment history can be attested without
+    /// trusting the payer. `amount` is bucketed before storage and a
+    /// commitment is stored in place of the exact amount.
+    pub fn record_reputation_payment(
+        env: Env,
+        subject: Address,
+        amount: i128,
+        payment_hash: BytesN<32>,
+    ) -> Result<u32, ContractError> {
+        Self::require_oracle_or_admin(&env)?;
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let now = env.ledger().timestamp();
+        let key = DataKey::Reputation(subject.clone());
+        let mut record = Self::get_reputation_record_or_default(&env, &key);
+
+        let on_time = record.payment_count == 0
+            || now.saturating_sub(record.last_payment_at) <= REP_ON_TIME_WINDOW_SECS;
+        let bucket = Self::bucket_amount(amount);
+
+        if record.payment_count == 0 {
+            record.first_payment_at = now;
+        }
+        record.payment_count = record.payment_count.saturating_add(1);
+        if on_time {
+            record.on_time_count = record.on_time_count.saturating_add(1);
+        }
+        record.total_bucket_volume = record.total_bucket_volume.saturating_add(bucket);
+        record.last_payment_at = now;
+
+        let entry = ReputationPayment {
+            timestamp: now,
+            amount_bucket: bucket,
+            on_time,
+            payment_hash,
+        };
+        if record.history.len() >= MAX_REPUTATION_HISTORY {
+            let mut trimmed: Vec<ReputationPayment> = Vec::new(&env);
+            for i in 1..record.history.len() {
+                if let Some(item) = record.history.get(i) {
+                    trimmed.push_back(item);
+                }
+            }
+            record.history = trimmed;
+        }
+        record.history.push_back(entry);
+
+        env.storage().persistent().set(&key, &record);
+        let score = Self::compute_reputation_score(&record, now);
+        env.events().publish(
+            (EVT_NS, symbol_short!("rep_pay"), subject),
+            (record.payment_count, score),
+        );
+        Ok(score)
+    }
+
+    /// Compute the current 0-100 reputation score for `subject`.
+    pub fn get_reputation_score(env: Env, subject: Address) -> Result<ReputationScore, ContractError> {
+        let key = DataKey::Reputation(subject);
+        let record: ReputationRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ReputationNotFound)?;
+        let now = env.ledger().timestamp();
+        let score = Self::compute_reputation_score(&record, now);
+        Ok(ReputationScore {
+            score,
+            payment_count: record.payment_count,
+            on_time_count: record.on_time_count,
+            computed_at: now,
+            did: record.did,
+        })
+    }
+
+    /// Return the raw (privacy-preserving) reputation record for `subject`.
+    pub fn get_reputation(env: Env, subject: Address) -> Option<ReputationRecord> {
+        env.storage().persistent().get(&DataKey::Reputation(subject))
+    }
+
+    /// Deterministic, privacy-preserving score computation over aggregate
+    /// inputs only. Returns a value in 0..=100.
+    fn compute_reputation_score(record: &ReputationRecord, now: u64) -> u32 {
+        if record.payment_count == 0 {
+            return 0;
+        }
+
+        // Timeliness: on-time ratio in basis points.
+        let timeliness_bp = (record.on_time_count as u64)
+            .saturating_mul(10_000)
+            .saturating_div(record.payment_count as u64)
+            .min(10_000) as u32;
+
+        // Volume: bucketed volume relative to the target, capped at 100%.
+        let volume_bp = if record.total_bucket_volume <= 0 {
+            0
+        } else {
+            let scaled = record
+                .total_bucket_volume
+                .saturating_mul(10_000)
+                .saturating_div(REP_VOLUME_TARGET);
+            if scaled > 10_000 { 10_000 } else { scaled as u32 }
+        };
+
+        // Activity: payment count relative to the target, decayed by recency.
+        let count_bp = (record.payment_count.min(REP_ACTIVITY_TARGET) as u64)
+            .saturating_mul(10_000)
+            .saturating_div(REP_ACTIVITY_TARGET as u64) as u32;
+        let idle_secs = now.saturating_sub(record.last_payment_at);
+        let recency_bp = if idle_secs <= REP_ON_TIME_WINDOW_SECS {
+            10_000u32
+        } else {
+            let decay = idle_secs
+                .saturating_sub(REP_ON_TIME_WINDOW_SECS)
+                .saturating_mul(10_000)
+                .saturating_div(365 * SECONDS_PER_DAY);
+            if decay >= 10_000 { 0 } else { 10_000 - decay as u32 }
+        };
+        let activity_bp = (count_bp as u64)
+            .saturating_mul(recency_bp as u64)
+            .saturating_div(10_000) as u32;
+
+        let weighted = (timeliness_bp as u64)
+            .saturating_mul(REP_WEIGHT_TIMELINESS as u64)
+            .saturating_add((volume_bp as u64).saturating_mul(REP_WEIGHT_VOLUME as u64))
+            .saturating_add((activity_bp as u64).saturating_mul(REP_WEIGHT_ACTIVITY as u64))
+            .saturating_div(10_000);
+
+        // Scale down when there is too little history to be confident.
+        let confidence = if record.payment_count >= REP_MIN_PAYMENTS {
+            10_000u64
+        } else {
+            (record.payment_count as u64)
+                .saturating_mul(10_000)
+                .saturating_div(REP_MIN_PAYMENTS as u64)
+        };
+        let final_score = weighted.saturating_mul(confidence).saturating_div(10_000);
+        final_score.min(100) as u32
+    }
+
+    /// Round `amount` down to a coarse power-of-ten bucket so exact payment
+    /// amounts are never persisted on-chain.
+    fn bucket_amount(amount: i128) -> i128 {
+        let mut bucket: i128 = 1;
+        while bucket.saturating_mul(10) <= amount {
+            bucket = bucket.saturating_mul(10);
+        }
+        bucket
+    }
+
+    fn get_reputation_record_or_default(env: &Env, key: &DataKey) -> ReputationRecord {
+        env.storage()
+            .persistent()
+            .get(key)
+            .unwrap_or(ReputationRecord {
+                did: None,
+                payment_count: 0,
+                on_time_count: 0,
+                total_bucket_volume: 0,
+                last_payment_at: 0,
+                first_payment_at: 0,
+                history: Vec::new(env),
+            })
+    }
+
+    /// Authorize either the configured oracle or the admin.
+    fn require_oracle_or_admin(env: &Env) -> Result<(), ContractError> {
+        if let Some(oracle) = env.storage().instance().get::<Symbol, Address>(&ORACLE) {
+            if oracle.try_require_auth().is_ok() {
+                return Ok(());
+            }
+        }
+        Self::require_admin(env)
+    }
+
     fn require_admin(env: &Env) -> Result<(), ContractError> {
         let admin = Self::get_admin(env)?;
         admin.require_auth();
@@ -8519,6 +8773,115 @@ mod tests {
         let (import_kwh, export_kwh) = client.get_export_totals(&meter_id);
         assert_eq!(import_kwh, 7);
         assert_eq!(export_kwh, 3);
+    }
+
+    // ── Issue #1070: reputation-based credit scoring ─────────────────────────
+
+    #[test]
+    fn test_reputation_score_starts_at_zero_and_requires_record() {
+        let (env, client, _admin) = setup();
+        let subject = Address::generate(&env);
+        assert_eq!(
+            client.try_get_reputation_score(&subject),
+            Err(Ok(ContractError::ReputationNotFound))
+        );
+        assert!(client.get_reputation(&subject).is_none());
+        let _ = env;
+    }
+
+    #[test]
+    fn test_reputation_records_payments_and_computes_score() {
+        let (env, client, _admin) = setup();
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        let subject = Address::generate(&env);
+        let hash = BytesN::from_array(&env, &[7u8; 32]);
+
+        let mut last_score = 0u32;
+        for i in 0..5u64 {
+            env.ledger().with_mut(|li| li.timestamp = 1_000 + i * 1_000);
+            last_score = client.record_reputation_payment(&subject, &5_000_000_i128, &hash);
+        }
+        assert!(last_score > 0 && last_score <= 100);
+
+        let record = client.get_reputation(&subject).unwrap();
+        assert_eq!(record.payment_count, 5);
+        assert_eq!(record.on_time_count, 5);
+        assert_eq!(record.history.len(), 5);
+        // Exact amounts are never stored — only coarse buckets.
+        assert_eq!(record.history.get(0).unwrap().amount_bucket, 1_000_000);
+
+        let score = client.get_reputation_score(&subject).unwrap();
+        assert_eq!(score.score, last_score);
+        assert_eq!(score.payment_count, 5);
+        assert!(score.score <= 100);
+    }
+
+    #[test]
+    fn test_reputation_late_payments_lower_score() {
+        let (env, client, _admin) = setup();
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        let hash = BytesN::from_array(&env, &[1u8; 32]);
+
+        let on_time = Address::generate(&env);
+        for i in 0..5u64 {
+            env.ledger().with_mut(|li| li.timestamp = 1_000 + i * 1_000);
+            client.record_reputation_payment(&on_time, &10_000_000_i128, &hash);
+        }
+        let late = Address::generate(&env);
+        for i in 0..5u64 {
+            env.ledger().with_mut(|li| li.timestamp = 1_000 + i * 30 * SECONDS_PER_DAY);
+            client.record_reputation_payment(&late, &10_000_000_i128, &hash);
+        }
+
+        let on_time_score = client.get_reputation_score(&on_time).unwrap().score;
+        let late_score = client.get_reputation_score(&late).unwrap().score;
+        assert!(on_time_score > late_score);
+    }
+
+    #[test]
+    fn test_reputation_did_association_and_validation() {
+        let (env, client, _admin) = setup();
+        let subject = Address::generate(&env);
+        let did = String::from_str(&env, "did:solar:abc123");
+        client.set_reputation_did(&subject, &did);
+        assert_eq!(client.get_reputation(&subject).unwrap().did, Some(did.clone()));
+
+        let empty = String::from_str(&env, "");
+        assert_eq!(
+            client.try_set_reputation_did(&subject, &empty),
+            Err(Ok(ContractError::InvalidDid))
+        );
+    }
+
+    #[test]
+    fn test_reputation_history_is_bounded() {
+        let (env, client, _admin) = setup();
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        let subject = Address::generate(&env);
+        let hash = BytesN::from_array(&env, &[3u8; 32]);
+        for i in 0..(MAX_REPUTATION_HISTORY + 5) {
+            env.ledger().with_mut(|li| li.timestamp = 1_000 + i as u64);
+            client.record_reputation_payment(&subject, &1_000_i128, &hash);
+        }
+        let record = client.get_reputation(&subject).unwrap();
+        assert_eq!(record.history.len(), MAX_REPUTATION_HISTORY);
+        assert_eq!(record.payment_count, MAX_REPUTATION_HISTORY + 5);
+    }
+
+    #[test]
+    fn test_reputation_rejects_non_positive_amount() {
+        let (env, client, _admin) = setup();
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        let subject = Address::generate(&env);
+        let hash = BytesN::from_array(&env, &[0u8; 32]);
+        assert_eq!(
+            client.try_record_reputation_payment(&subject, &0_i128, &hash),
+            Err(Ok(ContractError::InvalidAmount))
+        );
     }
 
     #[test]
