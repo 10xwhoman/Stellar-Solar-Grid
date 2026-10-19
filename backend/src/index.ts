@@ -21,6 +21,10 @@ import { receiptsRouter } from "./routes/receipts.js";
 import { certificatesRouter } from "./routes/certificates.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { complianceRouter, complianceMonitor } from "./routes/compliance.js";
+import { benchmarkingRouter } from "./routes/benchmarking.js";
+import { educationRouter } from "./routes/education.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { auditRouter } from "./routes/audit.js";
 import { socialRouter } from "./routes/social.js";
 import { startLeaderboardScheduler } from "./lib/social.js";
@@ -176,6 +180,10 @@ interface MeterFirmware {
   reportedAt: string;
 }
 
+app.use(complianceMonitor);
+app.use("/api/compliance", complianceRouter);
+app.use("/api/benchmarking", benchmarkingRouter);
+app.use("/api/education", educationRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
@@ -402,4 +410,16 @@ app.use("/api/providers", providersBrandingRouter);
 // #1004: Blockchain Transaction History Explorer
 import { transactionsRouter } from "./routes/transactions.js";
 app.use("/api/transactions", transactionsRouter);
+
+// #1065: Energy Certificate Authority
+import { energyCertificatesRouter } from "./routes/energyCertificates.js";
+app.use("/api/energy-certificates", writeLimiter, energyCertificatesRouter);
+
+// #1066: Meter Behavioral Economics Nudges
+import { nudgesRouter } from "./routes/nudges.js";
+app.use("/api/nudges", nudgesRouter);
+
+// #1068: Energy Commons Management
+import { commonsRouter } from "./routes/commons.js";
+app.use("/api/commons", writeLimiter, commonsRouter);
 
