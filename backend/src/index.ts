@@ -21,6 +21,10 @@ import { receiptsRouter } from "./routes/receipts.js";
 import { certificatesRouter } from "./routes/certificates.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { complianceRouter, complianceMonitor } from "./routes/compliance.js";
+import { benchmarkingRouter } from "./routes/benchmarking.js";
+import { educationRouter } from "./routes/education.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { auditRouter } from "./routes/audit.js";
 import { socialRouter } from "./routes/social.js";
 import { startLeaderboardScheduler } from "./lib/social.js";
@@ -175,6 +179,10 @@ interface MeterFirmware {
   reportedAt: string;
 }
 
+app.use(complianceMonitor);
+app.use("/api/compliance", complianceRouter);
+app.use("/api/benchmarking", benchmarkingRouter);
+app.use("/api/education", educationRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
