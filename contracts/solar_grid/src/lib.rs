@@ -8,9 +8,11 @@ use soroban_sdk::{
 };
 
 mod certificates;
+mod commons;
 mod insurance;
 mod multi_asset;
 mod leases;
+mod quantum_crypto;
 mod recs;
 mod scheduling;
 mod staking;
@@ -18,9 +20,16 @@ mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
+pub use commons::{
+    CommonsConflict, CommonsMember, CommonsResource, CommonsRule, CommonsSanction,
+    CommonsViolation, MAX_COMMONS_PAGE,
+};
 pub use insurance::{ClaimStatus, InsuranceClaim, InsurancePolicy};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
 pub use leases::{LeaseAgreement, LeaseStatus};
+pub use quantum_crypto::{
+    PqcAlgorithm, PqcKeyRecord, PqcSignature, PqcVerification, MAX_PQC_SIGNATURE_LEN,
+};
 pub use recs::{
     RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
     RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
@@ -4791,6 +4800,250 @@ impl SolarGridContract {
         // layouts are upgraded and persisted by the read-through migration.
         Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?;
         Ok(())
+    }
+
+    // ── Issue #1065: Energy Certificate Authority ────────────────────────────
+
+    /// Configure the energy certificate authority. Admin-only.
+    pub fn configure_certificate_authority(
+        env: Env,
+        authority: Address,
+        standard: String,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "configure_certificate_authority", "contract")?;
+        certificates::configure_authority(&env, authority, standard)
+    }
+
+    /// Register a third-party verifier authorized to attest certificates.
+    /// Admin-only.
+    pub fn add_certificate_verifier(env: Env, verifier: Address) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "add_certificate_verifier", "contract")?;
+        certificates::add_verifier(&env, verifier)
+    }
+
+    /// Remove a third-party verifier. Admin-only.
+    pub fn remove_certificate_verifier(env: Env, verifier: Address) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "remove_certificate_verifier", "contract")?;
+        certificates::remove_verifier(&env, verifier)
+    }
+
+    /// Issue a verifiable energy generation certificate for a meter. The
+    /// certificate carries a cryptographic proof of authenticity derived from
+    /// the meter, generation data and period. Admin-only.
+    pub fn issue_energy_certificate(
+        env: Env,
+        meter_id: String,
+        generation_kwh: i128,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, ContractError> {
+        Self::require_admin_action(&env, "issue_energy_certificate", "contract")?;
+        certificates::issue_certificate(&env, meter_id, generation_kwh, period_start, period_end)
+    }
+
+    /// Third-party verification of an issued certificate. Only registered
+    /// verifiers may attest.
+    pub fn verify_energy_certificate(
+        env: Env,
+        verifier: Address,
+        certificate_id: u64,
+    ) -> Result<(), ContractError> {
+        verifier.require_auth();
+        certificates::verify_certificate(&env, verifier, certificate_id)
+    }
+
+    /// Verify a certificate's cryptographic proof of authenticity.
+    pub fn verify_certificate_proof(
+        env: Env,
+        certificate_id: u64,
+    ) -> Result<bool, ContractError> {
+        certificates::verify_proof(&env, certificate_id)
+    }
+
+    /// Revoke a fraudulent certificate. Admin-only.
+    pub fn revoke_energy_certificate(
+        env: Env,
+        certificate_id: u64,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "revoke_energy_certificate", "contract")?;
+        certificates::revoke_certificate(&env, certificate_id, reason)
+    }
+
+    /// Fetch an energy certificate by id.
+    pub fn get_energy_certificate(
+        env: Env,
+        certificate_id: u64,
+    ) -> Result<certificates::EnergyCertificate, ContractError> {
+        certificates::get_certificate(&env, certificate_id)
+    }
+
+    /// Total number of energy certificates issued.
+    pub fn get_energy_certificate_count(env: Env) -> u64 {
+        certificates::certificate_count(&env)
+    }
+
+    // ── Issue #1067: Quantum-resistant cryptography ──────────────────────────
+
+    /// Register a post-quantum public key for `owner`. The owner must
+    /// authorize the registration.
+    pub fn register_pqc_key(
+        env: Env,
+        owner: Address,
+        algorithm: PqcAlgorithm,
+        public_key: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
+        quantum_crypto::register_key(&env, owner, algorithm, public_key)
+    }
+
+    /// Rotate an existing post-quantum key to a new algorithm/key pair.
+    pub fn rotate_pqc_key(
+        env: Env,
+        owner: Address,
+        algorithm: PqcAlgorithm,
+        public_key: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
+        quantum_crypto::rotate_key(&env, owner, algorithm, public_key)
+    }
+
+    /// Fetch the registered post-quantum key record for `owner`.
+    pub fn get_pqc_key(env: Env, owner: Address) -> Result<PqcKeyRecord, ContractError> {
+        quantum_crypto::get_key(&env, owner)
+    }
+
+    /// Verify a post-quantum signature over `message` for `owner`.
+    pub fn verify_pqc_signature(
+        env: Env,
+        owner: Address,
+        message: BytesN<32>,
+        signature: PqcSignature,
+    ) -> Result<PqcVerification, ContractError> {
+        quantum_crypto::verify_signature(&env, owner, message, signature)
+    }
+
+    /// Whether `owner` has migrated to a post-quantum key (backward
+    /// compatibility check during migration).
+    pub fn is_pqc_migrated(env: Env, owner: Address) -> bool {
+        quantum_crypto::is_migrated(&env, owner)
+    }
+
+    // ── Issue #1068: Energy commons management ───────────────────────────────
+
+    /// Define a shared community energy resource and its boundaries.
+    /// Admin-only.
+    pub fn create_commons_resource(
+        env: Env,
+        resource_id: String,
+        capacity_kwh: i128,
+        boundary: String,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "create_commons_resource", "contract")?;
+        commons::create_resource(&env, resource_id, capacity_kwh, boundary)
+    }
+
+    /// Add a member to the energy commons. Admin-only.
+    pub fn add_commons_member(
+        env: Env,
+        resource_id: String,
+        member: Address,
+        share_bps: u32,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "add_commons_member", "contract")?;
+        commons::add_member(&env, resource_id, member, share_bps)
+    }
+
+    /// Propose a member-defined usage rule for the commons. Members only.
+    pub fn propose_commons_rule(
+        env: Env,
+        member: Address,
+        resource_id: String,
+        rule: String,
+    ) -> Result<u64, ContractError> {
+        member.require_auth();
+        commons::propose_rule(&env, member, resource_id, rule)
+    }
+
+    /// Vote on a proposed commons rule. Members only.
+    pub fn vote_commons_rule(
+        env: Env,
+        member: Address,
+        rule_id: u64,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        member.require_auth();
+        commons::vote_rule(&env, member, rule_id, approve)
+    }
+
+    /// Request a resource allocation from the commons. Members only.
+    pub fn request_commons_allocation(
+        env: Env,
+        member: Address,
+        resource_id: String,
+        amount_kwh: i128,
+    ) -> Result<(), ContractError> {
+        member.require_auth();
+        commons::request_allocation(&env, member, resource_id, amount_kwh)
+    }
+
+    /// Report a commons rule violation. Members only.
+    pub fn report_commons_violation(
+        env: Env,
+        reporter: Address,
+        resource_id: String,
+        offender: Address,
+        details: String,
+    ) -> Result<u64, ContractError> {
+        reporter.require_auth();
+        commons::report_violation(&env, reporter, resource_id, offender, details)
+    }
+
+    /// Apply graduated sanctions for a confirmed violation. Admin-only.
+    pub fn apply_commons_sanction(
+        env: Env,
+        violation_id: u64,
+    ) -> Result<CommonsSanction, ContractError> {
+        Self::require_admin_action(&env, "apply_commons_sanction", "contract")?;
+        commons::apply_sanction(&env, violation_id)
+    }
+
+    /// Open a conflict resolution case. Members only.
+    pub fn open_commons_conflict(
+        env: Env,
+        member: Address,
+        resource_id: String,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        member.require_auth();
+        commons::open_conflict(&env, member, resource_id, description)
+    }
+
+    /// Resolve an open commons conflict. Admin-only.
+    pub fn resolve_commons_conflict(
+        env: Env,
+        conflict_id: u64,
+        resolution: String,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "resolve_commons_conflict", "contract")?;
+        commons::resolve_conflict(&env, conflict_id, resolution)
+    }
+
+    /// Fetch a commons resource definition.
+    pub fn get_commons_resource(
+        env: Env,
+        resource_id: String,
+    ) -> Result<CommonsResource, ContractError> {
+        commons::get_resource(&env, resource_id)
+    }
+
+    /// Fetch a commons member record.
+    pub fn get_commons_member(
+        env: Env,
+        resource_id: String,
+        member: Address,
+    ) -> Result<CommonsMember, ContractError> {
+        commons::get_member(&env, resource_id, member)
     }
 }
 
