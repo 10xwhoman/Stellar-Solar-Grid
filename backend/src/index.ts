@@ -7,6 +7,9 @@ import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { complianceRouter, complianceMonitor } from "./routes/compliance.js";
+import { benchmarkingRouter } from "./routes/benchmarking.js";
+import { educationRouter } from "./routes/education.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
 import {
@@ -60,6 +63,10 @@ app.use((req, _res, next) => {
   next();
 });
 
+app.use(complianceMonitor);
+app.use("/api/compliance", complianceRouter);
+app.use("/api/benchmarking", benchmarkingRouter);
+app.use("/api/education", educationRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
